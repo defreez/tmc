@@ -1,8 +1,19 @@
 # a^n b^n - imperative style
-# Mark one a, mark one b, repeat until done
+# Structural check (a*b*), then mark one a / one b, repeat
 
 alphabet input: [a, b]
 markers: [A, B]
+
+# Structural check: reject if not a*b* form
+scan right for [b, _]
+if b {
+  scan right for [a, _]
+  if a { reject }
+}
+
+# Rewind to start for main loop
+rewind left
+right
 
 # Main loop: match a's with b's
 loop {
@@ -11,6 +22,8 @@ loop {
 
   if _ {
     # No more a's - verify no unmarked b's
+    rewind left
+    right
     scan right for [b, _]
     if b { reject }
     accept
@@ -27,6 +40,6 @@ loop {
   write B
 
   # Go back to start
-  scan left for _
-  right  # Move onto first symbol
+  rewind left
+  right
 }

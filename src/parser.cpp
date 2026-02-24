@@ -280,6 +280,12 @@ private:
         lex_.Next();
         return std::make_shared<BreakStmt>();
       }
+      if (t.text == "rewind") {
+        lex_.Next();
+        auto dir_tok = lex_.Next();
+        Dir dir = (dir_tok.text == "left" || dir_tok.text == "L") ? Dir::L : Dir::R;
+        return std::make_shared<RewindStmt>(dir);
+      }
 
       // Variable declaration or assignment
       std::string name = lex_.Next().text;
@@ -470,7 +476,8 @@ private:
       lex_.Next();
       while (lex_.Peek().type != Lexer::Tok::RBracket) {
         auto t = lex_.Next();
-        if (t.type == Lexer::Tok::Ident || t.type == Lexer::Tok::Symbol) {
+        if (t.type == Lexer::Tok::Ident || t.type == Lexer::Tok::Symbol ||
+            t.type == Lexer::Tok::Gt) {
           Symbol s = (t.text == "_") ? kBlank : t.text[0];
           stmt->stop_symbols.insert(s);
         }

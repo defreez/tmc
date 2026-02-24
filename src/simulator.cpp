@@ -88,11 +88,11 @@ bool Simulator::Step() {
 
   const Transition& trans = trans_it->second;
 
-  // Extend tape if needed
-  while (head_ < 0) {
-    tape_.insert(tape_.begin(), kBlank);
+  // Left-bounded tape: clamp head at 0 (Sipser model)
+  if (head_ < 0) {
     head_ = 0;
   }
+  // Extend tape right if needed
   while (head_ >= static_cast<int>(tape_.size())) {
     tape_.push_back(kBlank);
   }

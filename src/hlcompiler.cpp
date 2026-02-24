@@ -4,13 +4,15 @@
 
 namespace tmc {
 
-// Tape layout:
-// [input]#[var0]#[var1]#...
+// Tape layout (left-bounded, Sipser model):
+// >[input]#[var0]#[var1]#...
+// > = left-end marker at cell 0, input starts at cell 1
 // Variables stored as unary: value 3 = "111"
 
 constexpr Symbol kSep = '#';
 constexpr Symbol kOne = '1';
 constexpr Symbol kMarked = 'I';
+constexpr Symbol kLeftEnd = '>';
 
 HLCompiler::HLCompiler() = default;
 
@@ -46,6 +48,7 @@ void HLCompiler::SetupAlphabet(const Program& program) {
   tm_.tape_alphabet.insert(kSep);
   tm_.tape_alphabet.insert(kOne);
   tm_.tape_alphabet.insert(kMarked);
+  tm_.tape_alphabet.insert(kLeftEnd);
 
   // Marked versions of input symbols
   for (Symbol s : program.input_alphabet) {
@@ -74,7 +77,7 @@ TM HLCompiler::Compile(const Program& program) {
   tm_.states.insert(tm_.accept);
   tm_.states.insert(tm_.reject);
 
-  State current = tm_.start;
+  State current = EmitPreamble(tm_.start);
   current = CompileStmts(program.body, current);
 
   // Default: accept at end
@@ -133,6 +136,8 @@ State HLCompiler::CompileStmt(const StmtPtr& stmt, State entry) {
     return CompileAppend(*app, entry);
   } else if (auto* brk = dynamic_cast<BreakStmt*>(stmt.get())) {
     return CompileBreak(*brk, entry);
+  } else if (auto* rw = dynamic_cast<RewindStmt*>(stmt.get())) {
+    return CompileRewind(*rw, entry);
   } else if (auto* ifeq = dynamic_cast<IfEqStmt*>(stmt.get())) {
     return CompileIfEq(*ifeq, entry);
   }
@@ -157,7 +162,7 @@ State HLCompiler::CompileLet(const LetStmt& stmt, State entry) {
 
   // Go back to start of tape before evaluating expression
   for (Symbol s : tm_.tape_alphabet) {
-    if (s == kBlank) {
+    if (s == kLeftEnd) {
       tm_.AddTransition(go_back, s, s, Dir::R, add_sep);
     } else {
       tm_.AddTransition(go_back, s, s, Dir::L, go_back);
@@ -283,9 +288,9 @@ State HLCompiler::CompileIf(const IfStmt& stmt, State entry) {
     State back = NewState("back");
     State verify = NewState("verify");
 
-    // First, rewind to start of tape
+    // First, rewind to start of tape (scan left for >)
     for (Symbol s : tm_.tape_alphabet) {
-      if (s == kBlank) {
+      if (s == kLeftEnd) {
         tm_.AddTransition(go_start, s, s, Dir::R, match_loop);
       } else {
         tm_.AddTransition(go_start, s, s, Dir::L, go_start);
@@ -332,9 +337,9 @@ State HLCompiler::CompileIf(const IfStmt& stmt, State entry) {
       }
     }
 
-    // Go back to start
+    // Go back to start (scan left for >)
     for (Symbol s : tm_.tape_alphabet) {
-      if (s == kBlank) {
+      if (s == kLeftEnd) {
         tm_.AddTransition(back, s, s, Dir::R, match_loop);
       } else {
         tm_.AddTransition(back, s, s, Dir::L, back);
@@ -510,17 +515,77 @@ State HLCompiler::CompileIfCurrent(const IfCurrentStmt& stmt, State entry) {
   return end;
 }
 
+State HLCompiler::EmitPreamble(State start) {
+  // Shift input right by 1 cell and write > at cell 0.
+  // Input starts at cell 0 (doty convention). After preamble:
+  //   cell 0: >   cell 1..n: input   cell n+1: _
+  //
+  // One shared carry state per symbol. Each carry state "carries" that symbol:
+  // on reading the next cell, it writes the carried symbol and transitions to
+  // the carry state for whatever was displaced.
+
+  State at_input = NewState("pre_done");
+
+  // Create one carry state per non-blank tape symbol
+  std::map<Symbol, State> carry_states;
+  for (Symbol s : tm_.tape_alphabet) {
+    if (s != kBlank && s != kLeftEnd) {
+      carry_states[s] = NewState("pre_c");
+    }
+  }
+
+  // From start: read cell 0, write >, move R, enter carry for that symbol
+  for (Symbol s : tm_.tape_alphabet) {
+    if (s == kBlank) {
+      // Empty input: write >, move R, head at cell 1 (blank)
+      tm_.AddTransition(start, kBlank, kLeftEnd, Dir::R, at_input);
+    } else if (s != kLeftEnd) {
+      tm_.AddTransition(start, s, kLeftEnd, Dir::R, carry_states[s]);
+    }
+  }
+
+  // Each carry state: "I'm carrying symbol C"
+  // On reading next cell:
+  //   - if blank: write C, rewind to >, move R -> done
+  //   - if non-blank D: write C, move R, enter carry[D]
+  State done_rewind = NewState("pre_rw");
+  for (auto& [carried, carry_st] : carry_states) {
+    for (Symbol next : tm_.tape_alphabet) {
+      if (next == kBlank) {
+        // Deposit carried symbol at blank, rewind
+        tm_.AddTransition(carry_st, kBlank, carried, Dir::L, done_rewind);
+      } else if (next != kLeftEnd) {
+        // Deposit carried, pick up displaced
+        tm_.AddTransition(carry_st, next, carried, Dir::R, carry_states[next]);
+      }
+    }
+  }
+
+  // Rewind from end of carry back to >
+  for (Symbol s : tm_.tape_alphabet) {
+    if (s == kLeftEnd) {
+      tm_.AddTransition(done_rewind, s, s, Dir::R, at_input);
+    } else {
+      tm_.AddTransition(done_rewind, s, s, Dir::L, done_rewind);
+    }
+  }
+
+  return at_input;
+}
+
 State HLCompiler::EmitRewindToStart(State entry) {
   State rewind = NewState("rewind");
   State at_start = NewState("at_start");
 
-  // Go to entry, then scan left until blank
+  // Move left one cell to start scanning
   for (Symbol s : tm_.tape_alphabet) {
     tm_.AddTransition(entry, s, s, Dir::L, rewind);
   }
 
+  // Scan left until > (left-end marker at cell 0)
+  // On left-bounded tape, L from cell 0 stays at cell 0, so > always stops the scan
   for (Symbol s : tm_.tape_alphabet) {
-    if (s == kBlank) {
+    if (s == kLeftEnd) {
       // Found left edge, move right onto first input symbol
       tm_.AddTransition(rewind, s, s, Dir::R, at_start);
     } else {
@@ -588,9 +653,9 @@ State HLCompiler::CompileCount(const Count& expr, const std::string& dest_var, S
     }
   }
 
-  // Go back to start
+  // Go back to start (scan left for >)
   for (Symbol s : tm_.tape_alphabet) {
-    if (s == kBlank) {
+    if (s == kLeftEnd) {
       tm_.AddTransition(back, s, s, Dir::R, scan);
     } else {
       tm_.AddTransition(back, s, s, Dir::L, back);
@@ -613,7 +678,7 @@ State HLCompiler::CompileCount(const Count& expr, const std::string& dest_var, S
   }
 
   for (Symbol s : tm_.tape_alphabet) {
-    if (s == kBlank) {
+    if (s == kLeftEnd) {
       tm_.AddTransition(restore_rewind, s, s, Dir::R, restore_scan);
     } else {
       tm_.AddTransition(restore_rewind, s, s, Dir::L, restore_rewind);
@@ -685,9 +750,9 @@ State HLCompiler::EmitCopyRegion(State entry, int src_region, int dest_region) {
     }
   }
 
-  // Go back to start, continue
+  // Go back to start (scan left for >), continue
   for (Symbol s : tm_.tape_alphabet) {
-    if (s == kBlank) {
+    if (s == kLeftEnd) {
       tm_.AddTransition(back, s, s, Dir::R, entry);
     } else {
       tm_.AddTransition(back, s, s, Dir::L, back);
@@ -768,9 +833,9 @@ State HLCompiler::EmitCompareRegionToRegion(State entry, int region_a, int regio
     }
   }
 
-  // Go back to start
+  // Go back to start (scan left for >)
   for (Symbol s : tm_.tape_alphabet) {
-    if (s == kBlank) {
+    if (s == kLeftEnd) {
       tm_.AddTransition(back, s, s, Dir::R, entry);
     } else {
       tm_.AddTransition(back, s, s, Dir::L, back);
@@ -1156,6 +1221,38 @@ State HLCompiler::CompileBreak(const BreakStmt& stmt, State entry) {
     tm_.AddTransition(entry, s, s, Dir::S, target);
   }
   return target;
+}
+
+State HLCompiler::CompileRewind(const RewindStmt& stmt, State entry) {
+  State scan = NewState("rw");
+  State done = NewState("rw_done");
+
+  if (stmt.direction == Dir::L) {
+    // Scan left until > (left-end marker), stay on it
+    for (Symbol s : tm_.tape_alphabet) {
+      if (s == kLeftEnd) {
+        tm_.AddTransition(scan, s, s, Dir::S, done);
+      } else {
+        tm_.AddTransition(scan, s, s, Dir::L, scan);
+      }
+    }
+  } else {
+    // Scan right until _ (blank), stay on it
+    for (Symbol s : tm_.tape_alphabet) {
+      if (s == kBlank) {
+        tm_.AddTransition(scan, s, s, Dir::S, done);
+      } else {
+        tm_.AddTransition(scan, s, s, Dir::R, scan);
+      }
+    }
+  }
+
+  // Wire entry to scan
+  for (Symbol s : tm_.tape_alphabet) {
+    tm_.AddTransition(entry, s, s, Dir::S, scan);
+  }
+
+  return done;
 }
 
 State HLCompiler::CompileIfEq(const IfEqStmt& stmt, State entry) {

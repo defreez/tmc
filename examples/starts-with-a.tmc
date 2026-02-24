@@ -1,0 +1,18 @@
+# Starts and ends with 'a'
+# Demonstrates rewind: two passes over input
+
+alphabet input: [a, b]
+
+# First pass: check last char
+rewind right
+left
+if b { reject }
+if _ { reject }
+
+# Second pass: rewind and check first char
+rewind left
+right
+if b { reject }
+if _ { reject }
+
+accept

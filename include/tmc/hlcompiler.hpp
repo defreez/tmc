@@ -6,9 +6,10 @@
 
 namespace tmc {
 
-// Tape layout:
-// [input region]#[var1]#[var2]#...#[varn]#_
+// Tape layout (left-bounded, Sipser model):
+// >[input region]#[var1]#[var2]#...#[varn]#_
 //
+// > = left-end marker at cell 0, input starts at cell 1
 // Variables stored as unary: value 3 = "111"
 // Markers: '#' = region separator
 //          Uppercase = marked/processed version
@@ -64,6 +65,7 @@ private:
   State CompileInc(const IncStmt& stmt, State entry);
   State CompileAppend(const AppendStmt& stmt, State entry);
   State CompileBreak(const BreakStmt& stmt, State entry);
+  State CompileRewind(const RewindStmt& stmt, State entry);
   State CompileIfEq(const IfEqStmt& stmt, State entry);
 
   // Expression compilation - evaluates expr, stores result in dest_var
@@ -72,7 +74,10 @@ private:
   State CompileCount(const Count& expr, const std::string& dest_var, State entry);
   State CompileBinExpr(const BinExpr& expr, const std::string& dest_var, State entry);
 
-  // Head management - rewind head to position 0 (left blank before input)
+  // Preamble - shift input right by 1, write > at cell 0
+  State EmitPreamble(State start);
+
+  // Head management - rewind head to cell 0 (> left-end marker)
   State EmitRewindToStart(State entry);
 
   // Primitive tape operations

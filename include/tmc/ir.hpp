@@ -226,6 +226,13 @@ struct BreakStmt : Stmt {
   std::string kind() const override { return "BreakStmt"; }
 };
 
+// Rewind head to tape boundary: rewind left -> land on >, rewind right -> land on _
+struct RewindStmt : Stmt {
+  Dir direction;
+  explicit RewindStmt(Dir d) : direction(d) {}
+  std::string kind() const override { return "RewindStmt"; }
+};
+
 // Compare two regions and branch: if a == b { ... } else { ... }
 struct IfEqStmt : Stmt {
   std::string reg_a;
