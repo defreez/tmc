@@ -1,23 +1,40 @@
-# TMC - Triangular Number Language
-# Decides: { a^n b^m | m = T(n) } where T(n) = n*(n+1)/2
+# Triangular Number Language
+# Decides: { a^n b^m | m = T(n) = n*(n+1)/2 }
+#
+# T(0)=0  ""           accept
+# T(1)=1  "ab"         accept
+# T(2)=3  "aabbb"      accept
+# T(3)=6  "aaabbbbbb"  accept
 
 alphabet input: [a, b]
 
-# Approach 1: Iterative sum
-n = count(a)
-sum = 0
-for i in 1..n {
-  sum = sum + i
+# Structural check: reject if not a*b* form
+scan right for [b, _]
+if b {
+  scan right for [a, _]
+  if a { reject }
 }
-return count(b) == sum
 
-# Approach 2: Direct formula (requires mul and div)
-# n = count(a)
-# return count(b) == (n * (n + 1)) / 2
+# Count input symbols into unary regions
+n = count(a)
+m = count(b)
+sum = 0
+i = 0
+z = 0
 
-# Approach 3: Matching pattern (most TM-native)
-# For each a at position i, match i b's
-# for i in 1..count(a) {
-#   match(b, i)  # mark exactly i b's
-# }
-# return all_matched(b)
+# Edge case: n=0 -> T(0)=0, check m==0
+if n == z {
+  if sum == m { accept }
+  reject
+}
+
+# Compute sum = 1 + 2 + ... + n = T(n)
+loop {
+  inc i
+  append i -> sum
+  if i == n { break }
+}
+
+# Accept iff m == T(n)
+if sum == m { accept }
+reject

@@ -1,6 +1,7 @@
 #include "tmc/ir.hpp"
 #include "tmc/parser.hpp"
 #include "tmc/codegen.hpp"
+#include "tmc/hlcompiler.hpp"
 #include "tmc/optimizer.hpp"
 #include "tmc/simulator.hpp"
 
@@ -78,13 +79,23 @@ int main(int argc, char* argv[]) {
   std::string source = buffer.str();
 
   try {
-    // Parse
-    if (verbose) std::cerr << "Parsing " << input_file << "...\n";
-    tmc::IRProgram program = tmc::Parse(source);
+    // Detect DSL type: high-level uses "alphabet input:", low-level uses "states:"
+    bool high_level = source.find("alphabet input:") != std::string::npos;
 
-    // Compile to TM
-    if (verbose) std::cerr << "Compiling to TM...\n";
-    tmc::TM tm = tmc::CompileIR(program);
+    if (verbose) std::cerr << "Parsing " << input_file
+                           << " (" << (high_level ? "high-level" : "low-level IR") << ")...\n";
+
+    tmc::TM tm = [&]() {
+      if (high_level) {
+        tmc::Program program = tmc::ParseHL(source);
+        if (verbose) std::cerr << "Compiling to TM...\n";
+        return tmc::CompileProgram(program);
+      } else {
+        tmc::IRProgram program = tmc::Parse(source);
+        if (verbose) std::cerr << "Compiling to TM...\n";
+        return tmc::CompileIR(program);
+      }
+    }();
 
     // Optimize
     if (optimize) {

@@ -86,9 +86,10 @@ std::string ToYAML(const TM& tm) {
   out << "accept_state: " << EscapeYAML(tm.accept) << "\n";
   out << "reject_state: " << EscapeYAML(tm.reject) << "\n";
 
-  // Delta
+  // Delta (skip accept/reject — they're halt states with no outgoing transitions)
   out << "\ndelta:\n";
   for (const auto& [state, trans_map] : tm.delta) {
+    if (state == tm.accept || state == tm.reject) continue;
     out << "  " << EscapeYAML(state) << ":\n";
     for (const auto& [sym, trans] : trans_map) {
       out << "    " << SymbolToStr(sym) << ": ["
