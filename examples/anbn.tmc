@@ -1,0 +1,32 @@
+# a^n b^n - imperative style
+# Mark one a, mark one b, repeat until done
+
+alphabet input: [a, b]
+markers: [A, B]
+
+# Main loop: match a's with b's
+loop {
+  # Find unmarked a
+  scan right for [a, _]
+
+  if _ {
+    # No more a's - verify no unmarked b's
+    scan right for [b, _]
+    if b { reject }
+    accept
+  }
+
+  # Mark the a
+  write A
+
+  # Find unmarked b
+  scan right for [b, _]
+  if _ { reject }  # No matching b
+
+  # Mark the b
+  write B
+
+  # Go back to start
+  scan left for _
+  right  # Move onto first symbol
+}

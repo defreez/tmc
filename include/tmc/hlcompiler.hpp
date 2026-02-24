@@ -52,6 +52,14 @@ private:
   State CompileIf(const IfStmt& stmt, State entry);
   State CompileReturn(const ReturnStmt& stmt, State entry);
 
+  // Imperative statement compilation
+  State CompileScan(const ScanStmt& stmt, State entry);
+  State CompileWrite(const WriteStmt& stmt, State entry);
+  State CompileMove(const MoveStmt& stmt, State entry);
+  State CompileLoop(const LoopStmt& stmt, State entry);
+  State CompileIfCurrent(const IfCurrentStmt& stmt, State entry);
+  State CompileMatch(const MatchStmt& stmt, State entry);
+
   // Expression compilation - evaluates expr, stores result in dest_var
   // Returns the exit state
   State CompileExpr(const ExprPtr& expr, const std::string& dest_var, State entry);

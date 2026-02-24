@@ -149,6 +149,8 @@ public:
 
       if (t.type == Lexer::Tok::Ident && t.text == "alphabet") {
         ParseAlphabet(prog);
+      } else if (t.type == Lexer::Tok::Ident && t.text == "markers") {
+        ParseMarkers(prog);
       } else {
         prog.body.push_back(ParseStmt());
       }
@@ -189,6 +191,20 @@ private:
     Expect(Lexer::Tok::RBracket);
   }
 
+  void ParseMarkers(Program& prog) {
+    Expect(Lexer::Tok::Ident, "markers");
+    Expect(Lexer::Tok::Colon);
+    Expect(Lexer::Tok::LBracket);
+    while (lex_.Peek().type != Lexer::Tok::RBracket) {
+      auto t = lex_.Next();
+      if (t.type == Lexer::Tok::Ident || t.type == Lexer::Tok::Symbol) {
+        prog.markers.insert(t.text[0]);
+      }
+      if (lex_.Peek().type == Lexer::Tok::Comma) lex_.Next();
+    }
+    Expect(Lexer::Tok::RBracket);
+  }
+
   void ParseAlphabetIR(IRProgram& prog) {
     Expect(Lexer::Tok::Ident, "alphabet");
     auto kind = lex_.Next();
@@ -222,11 +238,45 @@ private:
         lex_.Next();
         return std::make_shared<RejectStmt>();
       }
+      if (t.text == "match") {
+        lex_.Next();
+        // Read the pattern as a sequence of idents/symbols until newline/brace
+        std::string pattern;
+        while (true) {
+          auto pk = lex_.Peek();
+          if (pk.type == Lexer::Tok::Newline || pk.type == Lexer::Tok::Eof ||
+              pk.type == Lexer::Tok::LBrace || pk.type == Lexer::Tok::RBrace) {
+            break;
+          }
+          auto tok = lex_.Next();
+          pattern += tok.text;
+        }
+        return std::make_shared<MatchStmt>(pattern);
+      }
       if (t.text == "for") {
         return ParseFor();
       }
       if (t.text == "if") {
         return ParseIf();
+      }
+      if (t.text == "loop") {
+        return ParseLoop();
+      }
+      if (t.text == "scan") {
+        return ParseScan();
+      }
+      if (t.text == "write") {
+        lex_.Next();
+        auto sym = lex_.Next();
+        return std::make_shared<WriteStmt>(sym.text[0]);
+      }
+      if (t.text == "left" || t.text == "L") {
+        lex_.Next();
+        return std::make_shared<MoveStmt>(Dir::L);
+      }
+      if (t.text == "right" || t.text == "R") {
+        lex_.Next();
+        return std::make_shared<MoveStmt>(Dir::R);
       }
 
       // Variable declaration or assignment
@@ -262,7 +312,108 @@ private:
 
   StmtPtr ParseIf() {
     Expect(Lexer::Tok::Ident, "if");
-    auto cond = ParseExpr();
+
+    // Check if this is a symbol-based if (checking current tape cell)
+    auto t = lex_.Peek();
+    bool is_symbol_if = false;
+
+    // Symbol-based if: single identifier/symbol before {
+    if (t.type == Lexer::Tok::Ident || t.type == Lexer::Tok::Symbol) {
+      // Peek ahead to see if next is LBrace
+      lex_.Next();  // consume the potential symbol
+      auto next = lex_.Peek();
+      if (next.type == Lexer::Tok::LBrace) {
+        is_symbol_if = true;
+        // Parse as IfCurrentStmt
+        auto stmt = std::make_shared<IfCurrentStmt>();
+        Symbol sym = (t.text == "_") ? kBlank : t.text[0];
+
+        Expect(Lexer::Tok::LBrace);
+        stmt->branches[sym] = ParseBlock();
+
+        // Handle else if / else
+        while (lex_.Peek().type == Lexer::Tok::Ident && lex_.Peek().text == "else") {
+          lex_.Next();
+          auto peek = lex_.Peek();
+          if (peek.type == Lexer::Tok::Ident && peek.text == "if") {
+            // else if symbol { ... }
+            lex_.Next();
+            auto sym_tok = lex_.Next();
+            Symbol s = (sym_tok.text == "_") ? kBlank : sym_tok.text[0];
+            Expect(Lexer::Tok::LBrace);
+            stmt->branches[s] = ParseBlock();
+          } else {
+            // else { ... }
+            Expect(Lexer::Tok::LBrace);
+            stmt->else_body = ParseBlock();
+            break;
+          }
+        }
+
+        return stmt;
+      }
+      // Not a symbol-based if, need to put back the token (conceptually)
+      // We'll parse it as an expression starting with this identifier
+    }
+
+    // Expression-based if (original behavior)
+    // Note: t was already consumed if we fell through from symbol check
+    // We need to construct the expression properly
+    ExprPtr cond;
+    if (is_symbol_if) {
+      // Should not reach here
+      throw std::runtime_error("Parser error in if");
+    } else {
+      // The token t was consumed but wasn't a symbol-if
+      // Need to construct expression starting with it
+      if (t.type == Lexer::Tok::Ident || t.type == Lexer::Tok::Number) {
+        // Build expression from t
+        ExprPtr left;
+        if (t.type == Lexer::Tok::Number) {
+          left = std::make_shared<IntLit>(std::stoi(t.text));
+        } else if (t.text == "count") {
+          Expect(Lexer::Tok::LParen);
+          auto sym = lex_.Next();
+          Expect(Lexer::Tok::RParen);
+          left = std::make_shared<Count>(sym.text[0]);
+        } else {
+          left = std::make_shared<Var>(t.text);
+        }
+
+        // Now continue parsing comparison/binary ops
+        auto next = lex_.Peek();
+        if (next.type == Lexer::Tok::DoubleEquals) {
+          lex_.Next();
+          auto right = ParseAddSub();
+          cond = std::make_shared<BinExpr>(BinOp::Eq, left, right);
+        } else if (next.type == Lexer::Tok::Ne) {
+          lex_.Next();
+          auto right = ParseAddSub();
+          cond = std::make_shared<BinExpr>(BinOp::Ne, left, right);
+        } else if (next.type == Lexer::Tok::Lt) {
+          lex_.Next();
+          auto right = ParseAddSub();
+          cond = std::make_shared<BinExpr>(BinOp::Lt, left, right);
+        } else if (next.type == Lexer::Tok::Le) {
+          lex_.Next();
+          auto right = ParseAddSub();
+          cond = std::make_shared<BinExpr>(BinOp::Le, left, right);
+        } else if (next.type == Lexer::Tok::Gt) {
+          lex_.Next();
+          auto right = ParseAddSub();
+          cond = std::make_shared<BinExpr>(BinOp::Gt, left, right);
+        } else if (next.type == Lexer::Tok::Ge) {
+          lex_.Next();
+          auto right = ParseAddSub();
+          cond = std::make_shared<BinExpr>(BinOp::Ge, left, right);
+        } else {
+          cond = left;  // Just a var/literal as condition
+        }
+      } else {
+        throw std::runtime_error("Unexpected token in if condition");
+      }
+    }
+
     Expect(Lexer::Tok::LBrace);
 
     auto stmt = std::make_shared<IfStmt>();
@@ -273,6 +424,45 @@ private:
       lex_.Next();
       Expect(Lexer::Tok::LBrace);
       stmt->else_body = ParseBlock();
+    }
+
+    return stmt;
+  }
+
+  StmtPtr ParseLoop() {
+    Expect(Lexer::Tok::Ident, "loop");
+    Expect(Lexer::Tok::LBrace);
+
+    auto stmt = std::make_shared<LoopStmt>();
+    stmt->body = ParseBlock();
+    return stmt;
+  }
+
+  StmtPtr ParseScan() {
+    Expect(Lexer::Tok::Ident, "scan");
+    auto dir_tok = lex_.Next();
+    Dir dir = (dir_tok.text == "left" || dir_tok.text == "L") ? Dir::L : Dir::R;
+    Expect(Lexer::Tok::Ident, "for");
+
+    auto stmt = std::make_shared<ScanStmt>();
+    stmt->direction = dir;
+
+    // Parse symbol list: [a, b, _] or single symbol
+    if (lex_.Peek().type == Lexer::Tok::LBracket) {
+      lex_.Next();
+      while (lex_.Peek().type != Lexer::Tok::RBracket) {
+        auto t = lex_.Next();
+        if (t.type == Lexer::Tok::Ident || t.type == Lexer::Tok::Symbol) {
+          Symbol s = (t.text == "_") ? kBlank : t.text[0];
+          stmt->stop_symbols.insert(s);
+        }
+        if (lex_.Peek().type == Lexer::Tok::Comma) lex_.Next();
+      }
+      Expect(Lexer::Tok::RBracket);
+    } else {
+      auto t = lex_.Next();
+      Symbol s = (t.text == "_") ? kBlank : t.text[0];
+      stmt->stop_symbols.insert(s);
     }
 
     return stmt;

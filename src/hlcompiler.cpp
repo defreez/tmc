@@ -53,6 +53,11 @@ void HLCompiler::SetupAlphabet(const Program& program) {
       tm_.tape_alphabet.insert(static_cast<Symbol>(s - 'a' + 'A'));
     }
   }
+
+  // Add marker symbols from program
+  for (Symbol s : program.markers) {
+    tm_.tape_alphabet.insert(s);
+  }
 }
 
 TM HLCompiler::Compile(const Program& program) {
@@ -112,6 +117,18 @@ State HLCompiler::CompileStmt(const StmtPtr& stmt, State entry) {
       tm_.AddTransition(entry, s, s, Dir::S, tm_.reject);
     }
     return tm_.reject;
+  } else if (auto* scan = dynamic_cast<ScanStmt*>(stmt.get())) {
+    return CompileScan(*scan, entry);
+  } else if (auto* write = dynamic_cast<WriteStmt*>(stmt.get())) {
+    return CompileWrite(*write, entry);
+  } else if (auto* move = dynamic_cast<MoveStmt*>(stmt.get())) {
+    return CompileMove(*move, entry);
+  } else if (auto* loop = dynamic_cast<LoopStmt*>(stmt.get())) {
+    return CompileLoop(*loop, entry);
+  } else if (auto* if_cur = dynamic_cast<IfCurrentStmt*>(stmt.get())) {
+    return CompileIfCurrent(*if_cur, entry);
+  } else if (auto* match = dynamic_cast<MatchStmt*>(stmt.get())) {
+    return CompileMatch(*match, entry);
   }
   throw std::runtime_error("Unknown statement type");
 }
@@ -364,6 +381,237 @@ State HLCompiler::CompileReturn(const ReturnStmt& stmt, State entry) {
   if_stmt->then_body.push_back(std::make_shared<AcceptStmt>());
   if_stmt->else_body.push_back(std::make_shared<RejectStmt>());
   return CompileIf(*if_stmt, entry);
+}
+
+State HLCompiler::CompileMatch(const MatchStmt& stmt, State entry) {
+  // Parse simple regex: symbol*, symbol+, concatenation
+  // e.g., "a*b*" means zero or more a's followed by zero or more b's
+  //
+  // Build a DFA for the pattern
+
+  std::vector<std::pair<Symbol, bool>> parts;  // (symbol, is_star)
+
+  size_t i = 0;
+  while (i < stmt.pattern.size()) {
+    char c = stmt.pattern[i];
+    if (std::isalpha(c) || c == '_') {
+      Symbol sym = (c == '_') ? kBlank : c;
+      bool star = (i + 1 < stmt.pattern.size() && stmt.pattern[i + 1] == '*');
+      bool plus = (i + 1 < stmt.pattern.size() && stmt.pattern[i + 1] == '+');
+      if (star || plus) {
+        parts.push_back({sym, true});  // * or + both allow repeating
+        if (plus) {
+          // + means at least one - we'll handle this by requiring one first
+          parts.insert(parts.end() - 1, {sym, false});  // Insert required one before
+        }
+        i += 2;
+      } else {
+        parts.push_back({sym, false});
+        i += 1;
+      }
+    } else {
+      ++i;  // skip unknown chars
+    }
+  }
+
+  if (parts.empty()) {
+    // Empty pattern matches everything
+    return entry;
+  }
+
+  // Build states: one per part
+  State done = NewState("match_done");
+  State current = entry;
+
+  for (size_t p = 0; p < parts.size(); ++p) {
+    Symbol sym = parts[p].first;
+    bool is_star = parts[p].second;
+    State next = (p + 1 < parts.size()) ? NewState("match_p" + std::to_string(p + 1)) : done;
+
+    if (is_star) {
+      // Loop on sym, advance on anything that could start next part
+      std::set<Symbol> next_starts;
+      if (p + 1 < parts.size()) {
+        next_starts.insert(parts[p + 1].first);
+      }
+      next_starts.insert(kBlank);  // blank always ends
+
+      for (Symbol s : tm_.tape_alphabet) {
+        if (s == sym) {
+          // Stay in current state
+          tm_.AddTransition(current, s, s, Dir::R, current);
+        } else if (s == kBlank) {
+          // End of input - accept if this is last part or remaining parts are all stars
+          bool all_optional = true;
+          for (size_t q = p + 1; q < parts.size(); ++q) {
+            if (!parts[q].second) { all_optional = false; break; }
+          }
+          if (all_optional) {
+            tm_.AddTransition(current, s, s, Dir::S, done);
+          } else {
+            tm_.AddTransition(current, s, s, Dir::S, tm_.reject);
+          }
+        } else if (next_starts.count(s)) {
+          // Move to next part
+          tm_.AddTransition(current, s, s, Dir::R, next);
+        } else {
+          // Invalid symbol - reject
+          tm_.AddTransition(current, s, s, Dir::S, tm_.reject);
+        }
+      }
+    } else {
+      // Must match exactly sym
+      for (Symbol s : tm_.tape_alphabet) {
+        if (s == sym) {
+          tm_.AddTransition(current, s, s, Dir::R, next);
+        } else if (s == kBlank) {
+          // Unexpected end - reject
+          tm_.AddTransition(current, s, s, Dir::S, tm_.reject);
+        } else {
+          // Wrong symbol - reject
+          tm_.AddTransition(current, s, s, Dir::S, tm_.reject);
+        }
+      }
+    }
+
+    current = next;
+  }
+
+  // At done state, rewind to start for subsequent operations
+  State rewind = NewState("match_rewind");
+  State final = NewState("match_final");
+
+  for (Symbol s : tm_.tape_alphabet) {
+    tm_.AddTransition(done, s, s, Dir::L, rewind);
+  }
+
+  for (Symbol s : tm_.tape_alphabet) {
+    if (s == kBlank) {
+      tm_.AddTransition(rewind, s, s, Dir::R, final);
+    } else {
+      tm_.AddTransition(rewind, s, s, Dir::L, rewind);
+    }
+  }
+
+  return final;
+}
+
+State HLCompiler::CompileScan(const ScanStmt& stmt, State entry) {
+  // Scan in direction until one of the stop symbols
+  State scan = NewState("scan");
+  State done = NewState("scan_done");
+
+  // Connect entry
+  for (Symbol s : tm_.tape_alphabet) {
+    tm_.AddTransition(entry, s, s, Dir::S, scan);
+  }
+
+  // Scan loop
+  for (Symbol s : tm_.tape_alphabet) {
+    if (stmt.stop_symbols.count(s)) {
+      // Stop here
+      tm_.AddTransition(scan, s, s, Dir::S, done);
+    } else {
+      // Keep going
+      tm_.AddTransition(scan, s, s, stmt.direction, scan);
+    }
+  }
+
+  return done;
+}
+
+State HLCompiler::CompileWrite(const WriteStmt& stmt, State entry) {
+  State done = NewState("write_done");
+
+  // Write the symbol without moving
+  for (Symbol s : tm_.tape_alphabet) {
+    tm_.AddTransition(entry, s, stmt.symbol, Dir::S, done);
+  }
+
+  return done;
+}
+
+State HLCompiler::CompileMove(const MoveStmt& stmt, State entry) {
+  State done = NewState("move_done");
+
+  // Move in the specified direction
+  for (Symbol s : tm_.tape_alphabet) {
+    tm_.AddTransition(entry, s, s, stmt.direction, done);
+  }
+
+  return done;
+}
+
+State HLCompiler::CompileLoop(const LoopStmt& stmt, State entry) {
+  // Infinite loop - must exit via accept/reject
+  State loop_head = NewState("loop_head");
+
+  // Connect entry to loop head
+  for (Symbol s : tm_.tape_alphabet) {
+    tm_.AddTransition(entry, s, s, Dir::S, loop_head);
+  }
+
+  // Compile body
+  State body_end = CompileStmts(stmt.body, loop_head);
+
+  // Loop back (unless body ended at accept/reject)
+  if (body_end != tm_.accept && body_end != tm_.reject) {
+    for (Symbol s : tm_.tape_alphabet) {
+      if (tm_.delta[body_end].find(s) == tm_.delta[body_end].end()) {
+        tm_.AddTransition(body_end, s, s, Dir::S, loop_head);
+      }
+    }
+  }
+
+  // Loops don't have a normal exit, they're infinite
+  // Return a dummy state - the only exits are accept/reject
+  return loop_head;
+}
+
+State HLCompiler::CompileIfCurrent(const IfCurrentStmt& stmt, State entry) {
+  State end = NewState("if_cur_end");
+
+  // Branch based on current symbol
+  for (auto& [sym, body] : stmt.branches) {
+    State branch_head = NewState("branch");
+    tm_.AddTransition(entry, sym, sym, Dir::S, branch_head);
+
+    State branch_end = CompileStmts(body, branch_head);
+    if (branch_end != tm_.accept && branch_end != tm_.reject) {
+      for (Symbol s : tm_.tape_alphabet) {
+        if (tm_.delta[branch_end].find(s) == tm_.delta[branch_end].end()) {
+          tm_.AddTransition(branch_end, s, s, Dir::S, end);
+        }
+      }
+    }
+  }
+
+  // Handle else branch
+  if (!stmt.else_body.empty()) {
+    State else_head = NewState("else");
+    for (Symbol s : tm_.tape_alphabet) {
+      if (!stmt.branches.count(s) && tm_.delta[entry].find(s) == tm_.delta[entry].end()) {
+        tm_.AddTransition(entry, s, s, Dir::S, else_head);
+      }
+    }
+    State else_end = CompileStmts(stmt.else_body, else_head);
+    if (else_end != tm_.accept && else_end != tm_.reject) {
+      for (Symbol s : tm_.tape_alphabet) {
+        if (tm_.delta[else_end].find(s) == tm_.delta[else_end].end()) {
+          tm_.AddTransition(else_end, s, s, Dir::S, end);
+        }
+      }
+    }
+  } else {
+    // No else - unhandled symbols go straight to end
+    for (Symbol s : tm_.tape_alphabet) {
+      if (!stmt.branches.count(s) && tm_.delta[entry].find(s) == tm_.delta[entry].end()) {
+        tm_.AddTransition(entry, s, s, Dir::S, end);
+      }
+    }
+  }
+
+  return end;
 }
 
 State HLCompiler::CompileExpr(const ExprPtr& expr, const std::string& dest_var, State entry) {

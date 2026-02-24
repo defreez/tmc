@@ -164,12 +164,58 @@ struct RejectStmt : Stmt {
   std::string kind() const override { return "RejectStmt"; }
 };
 
+// Match regex pattern against input: match a*b*
+struct MatchStmt : Stmt {
+  std::string pattern;  // e.g., "a*b*"
+  explicit MatchStmt(const std::string& p) : pattern(p) {}
+  std::string kind() const override { return "MatchStmt"; }
+};
+
+//=============================================================================
+// IMPERATIVE TAPE STATEMENTS
+//=============================================================================
+
+// Scan left/right until one of the stop symbols: scan right for [a, b, _]
+struct ScanStmt : Stmt {
+  Dir direction;
+  std::set<Symbol> stop_symbols;
+  std::string kind() const override { return "ScanStmt"; }
+};
+
+// Write a symbol at current position: write A
+struct WriteStmt : Stmt {
+  Symbol symbol;
+  explicit WriteStmt(Symbol s) : symbol(s) {}
+  std::string kind() const override { return "WriteStmt"; }
+};
+
+// Move head: left, right
+struct MoveStmt : Stmt {
+  Dir direction;
+  explicit MoveStmt(Dir d) : direction(d) {}
+  std::string kind() const override { return "MoveStmt"; }
+};
+
+// Infinite loop: loop { body } - exit via accept/reject
+struct LoopStmt : Stmt {
+  std::vector<StmtPtr> body;
+  std::string kind() const override { return "LoopStmt"; }
+};
+
+// Check current symbol: if a { ... } else if b { ... } else { ... }
+struct IfCurrentStmt : Stmt {
+  std::map<Symbol, std::vector<StmtPtr>> branches;  // symbol -> body
+  std::vector<StmtPtr> else_body;
+  std::string kind() const override { return "IfCurrentStmt"; }
+};
+
 //=============================================================================
 // PROGRAM
 //=============================================================================
 
 struct Program {
   std::set<Symbol> input_alphabet;
+  std::set<Symbol> markers;  // extra tape symbols
   std::vector<StmtPtr> body;
 };
 
