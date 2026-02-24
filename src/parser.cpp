@@ -238,21 +238,6 @@ private:
         lex_.Next();
         return std::make_shared<RejectStmt>();
       }
-      if (t.text == "match") {
-        lex_.Next();
-        // Read the pattern as a sequence of idents/symbols until newline/brace
-        std::string pattern;
-        while (true) {
-          auto pk = lex_.Peek();
-          if (pk.type == Lexer::Tok::Newline || pk.type == Lexer::Tok::Eof ||
-              pk.type == Lexer::Tok::LBrace || pk.type == Lexer::Tok::RBrace) {
-            break;
-          }
-          auto tok = lex_.Next();
-          pattern += tok.text;
-        }
-        return std::make_shared<MatchStmt>(pattern);
-      }
       if (t.text == "for") {
         return ParseFor();
       }
@@ -277,6 +262,23 @@ private:
       if (t.text == "right" || t.text == "R") {
         lex_.Next();
         return std::make_shared<MoveStmt>(Dir::R);
+      }
+      if (t.text == "inc") {
+        lex_.Next();
+        auto reg = lex_.Next().text;
+        return std::make_shared<IncStmt>(reg);
+      }
+      if (t.text == "append") {
+        lex_.Next();
+        auto src = lex_.Next().text;
+        Expect(Lexer::Tok::Minus);  // ->
+        Expect(Lexer::Tok::Gt);
+        auto dst = lex_.Next().text;
+        return std::make_shared<AppendStmt>(src, dst);
+      }
+      if (t.text == "break") {
+        lex_.Next();
+        return std::make_shared<BreakStmt>();
       }
 
       // Variable declaration or assignment
@@ -385,6 +387,22 @@ private:
         if (next.type == Lexer::Tok::DoubleEquals) {
           lex_.Next();
           auto right = ParseAddSub();
+          // If both sides are simple vars, produce IfEqStmt (VM instruction)
+          auto* lv = dynamic_cast<Var*>(left.get());
+          auto* rv = dynamic_cast<Var*>(right.get());
+          if (lv && rv) {
+            Expect(Lexer::Tok::LBrace);
+            auto stmt = std::make_shared<IfEqStmt>();
+            stmt->reg_a = lv->name;
+            stmt->reg_b = rv->name;
+            stmt->then_body = ParseBlock();
+            if (lex_.Peek().type == Lexer::Tok::Ident && lex_.Peek().text == "else") {
+              lex_.Next();
+              Expect(Lexer::Tok::LBrace);
+              stmt->else_body = ParseBlock();
+            }
+            return stmt;
+          }
           cond = std::make_shared<BinExpr>(BinOp::Eq, left, right);
         } else if (next.type == Lexer::Tok::Ne) {
           lex_.Next();

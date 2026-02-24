@@ -127,8 +127,14 @@ State HLCompiler::CompileStmt(const StmtPtr& stmt, State entry) {
     return CompileLoop(*loop, entry);
   } else if (auto* if_cur = dynamic_cast<IfCurrentStmt*>(stmt.get())) {
     return CompileIfCurrent(*if_cur, entry);
-  } else if (auto* match = dynamic_cast<MatchStmt*>(stmt.get())) {
-    return CompileMatch(*match, entry);
+  } else if (auto* inc = dynamic_cast<IncStmt*>(stmt.get())) {
+    return CompileInc(*inc, entry);
+  } else if (auto* app = dynamic_cast<AppendStmt*>(stmt.get())) {
+    return CompileAppend(*app, entry);
+  } else if (auto* brk = dynamic_cast<BreakStmt*>(stmt.get())) {
+    return CompileBreak(*brk, entry);
+  } else if (auto* ifeq = dynamic_cast<IfEqStmt*>(stmt.get())) {
+    return CompileIfEq(*ifeq, entry);
   }
   throw std::runtime_error("Unknown statement type");
 }
@@ -164,7 +170,8 @@ State HLCompiler::CompileLet(const LetStmt& stmt, State entry) {
   }
 
   // Evaluate expression (now at start of tape)
-  return CompileExpr(stmt.init, stmt.name, add_sep);
+  State expr_done = CompileExpr(stmt.init, stmt.name, add_sep);
+  return EmitRewindToStart(expr_done);
 }
 
 State HLCompiler::CompileAssign(const AssignStmt& stmt, State entry) {
@@ -239,17 +246,14 @@ State HLCompiler::CompileFor(const ForStmt& stmt, State entry) {
   // Compile body
   State body_done = CompileStmts(stmt.body, loop_body);
 
-  // Go back to loop head
-  State rewind = NewState("for_rewind");
+  // Go back to loop head (rewind to start first)
+  State body_rewind = EmitRewindToStart(body_done);
   for (Symbol s : tm_.tape_alphabet) {
-    if (s == kBlank) {
-      tm_.AddTransition(body_done, s, s, Dir::R, loop_head);
-    } else {
-      tm_.AddTransition(body_done, s, s, Dir::L, body_done);
-    }
+    tm_.AddTransition(body_rewind, s, s, Dir::S, loop_head);
   }
 
-  return loop_end;
+  // Rewind at loop exit too
+  return EmitRewindToStart(loop_end);
 }
 
 State HLCompiler::CompileIf(const IfStmt& stmt, State entry) {
@@ -372,7 +376,7 @@ State HLCompiler::CompileIf(const IfStmt& stmt, State entry) {
     }
   }
 
-  return end_st;
+  return EmitRewindToStart(end_st);
 }
 
 State HLCompiler::CompileReturn(const ReturnStmt& stmt, State entry) {
@@ -381,119 +385,6 @@ State HLCompiler::CompileReturn(const ReturnStmt& stmt, State entry) {
   if_stmt->then_body.push_back(std::make_shared<AcceptStmt>());
   if_stmt->else_body.push_back(std::make_shared<RejectStmt>());
   return CompileIf(*if_stmt, entry);
-}
-
-State HLCompiler::CompileMatch(const MatchStmt& stmt, State entry) {
-  // Parse simple regex: symbol*, symbol+, concatenation
-  // e.g., "a*b*" means zero or more a's followed by zero or more b's
-  //
-  // Build a DFA for the pattern
-
-  std::vector<std::pair<Symbol, bool>> parts;  // (symbol, is_star)
-
-  size_t i = 0;
-  while (i < stmt.pattern.size()) {
-    char c = stmt.pattern[i];
-    if (std::isalpha(c) || c == '_') {
-      Symbol sym = (c == '_') ? kBlank : c;
-      bool star = (i + 1 < stmt.pattern.size() && stmt.pattern[i + 1] == '*');
-      bool plus = (i + 1 < stmt.pattern.size() && stmt.pattern[i + 1] == '+');
-      if (star || plus) {
-        parts.push_back({sym, true});  // * or + both allow repeating
-        if (plus) {
-          // + means at least one - we'll handle this by requiring one first
-          parts.insert(parts.end() - 1, {sym, false});  // Insert required one before
-        }
-        i += 2;
-      } else {
-        parts.push_back({sym, false});
-        i += 1;
-      }
-    } else {
-      ++i;  // skip unknown chars
-    }
-  }
-
-  if (parts.empty()) {
-    // Empty pattern matches everything
-    return entry;
-  }
-
-  // Build states: one per part
-  State done = NewState("match_done");
-  State current = entry;
-
-  for (size_t p = 0; p < parts.size(); ++p) {
-    Symbol sym = parts[p].first;
-    bool is_star = parts[p].second;
-    State next = (p + 1 < parts.size()) ? NewState("match_p" + std::to_string(p + 1)) : done;
-
-    if (is_star) {
-      // Loop on sym, advance on anything that could start next part
-      std::set<Symbol> next_starts;
-      if (p + 1 < parts.size()) {
-        next_starts.insert(parts[p + 1].first);
-      }
-      next_starts.insert(kBlank);  // blank always ends
-
-      for (Symbol s : tm_.tape_alphabet) {
-        if (s == sym) {
-          // Stay in current state
-          tm_.AddTransition(current, s, s, Dir::R, current);
-        } else if (s == kBlank) {
-          // End of input - accept if this is last part or remaining parts are all stars
-          bool all_optional = true;
-          for (size_t q = p + 1; q < parts.size(); ++q) {
-            if (!parts[q].second) { all_optional = false; break; }
-          }
-          if (all_optional) {
-            tm_.AddTransition(current, s, s, Dir::S, done);
-          } else {
-            tm_.AddTransition(current, s, s, Dir::S, tm_.reject);
-          }
-        } else if (next_starts.count(s)) {
-          // Move to next part
-          tm_.AddTransition(current, s, s, Dir::R, next);
-        } else {
-          // Invalid symbol - reject
-          tm_.AddTransition(current, s, s, Dir::S, tm_.reject);
-        }
-      }
-    } else {
-      // Must match exactly sym
-      for (Symbol s : tm_.tape_alphabet) {
-        if (s == sym) {
-          tm_.AddTransition(current, s, s, Dir::R, next);
-        } else if (s == kBlank) {
-          // Unexpected end - reject
-          tm_.AddTransition(current, s, s, Dir::S, tm_.reject);
-        } else {
-          // Wrong symbol - reject
-          tm_.AddTransition(current, s, s, Dir::S, tm_.reject);
-        }
-      }
-    }
-
-    current = next;
-  }
-
-  // At done state, rewind to start for subsequent operations
-  State rewind = NewState("match_rewind");
-  State final = NewState("match_final");
-
-  for (Symbol s : tm_.tape_alphabet) {
-    tm_.AddTransition(done, s, s, Dir::L, rewind);
-  }
-
-  for (Symbol s : tm_.tape_alphabet) {
-    if (s == kBlank) {
-      tm_.AddTransition(rewind, s, s, Dir::R, final);
-    } else {
-      tm_.AddTransition(rewind, s, s, Dir::L, rewind);
-    }
-  }
-
-  return final;
 }
 
 State HLCompiler::CompileScan(const ScanStmt& stmt, State entry) {
@@ -543,8 +434,12 @@ State HLCompiler::CompileMove(const MoveStmt& stmt, State entry) {
 }
 
 State HLCompiler::CompileLoop(const LoopStmt& stmt, State entry) {
-  // Infinite loop - must exit via accept/reject
+  // Infinite loop - exit via accept/reject/break
   State loop_head = NewState("loop_head");
+  State loop_exit = NewState("loop_exit");
+
+  // Push break target
+  break_targets_.push(loop_exit);
 
   // Connect entry to loop head
   for (Symbol s : tm_.tape_alphabet) {
@@ -554,8 +449,8 @@ State HLCompiler::CompileLoop(const LoopStmt& stmt, State entry) {
   // Compile body
   State body_end = CompileStmts(stmt.body, loop_head);
 
-  // Loop back (unless body ended at accept/reject)
-  if (body_end != tm_.accept && body_end != tm_.reject) {
+  // Loop back (unless body ended at accept/reject/break target)
+  if (body_end != tm_.accept && body_end != tm_.reject && body_end != loop_exit) {
     for (Symbol s : tm_.tape_alphabet) {
       if (tm_.delta[body_end].find(s) == tm_.delta[body_end].end()) {
         tm_.AddTransition(body_end, s, s, Dir::S, loop_head);
@@ -563,9 +458,10 @@ State HLCompiler::CompileLoop(const LoopStmt& stmt, State entry) {
     }
   }
 
-  // Loops don't have a normal exit, they're infinite
-  // Return a dummy state - the only exits are accept/reject
-  return loop_head;
+  // Pop break target
+  break_targets_.pop();
+
+  return loop_exit;
 }
 
 State HLCompiler::CompileIfCurrent(const IfCurrentStmt& stmt, State entry) {
@@ -612,6 +508,27 @@ State HLCompiler::CompileIfCurrent(const IfCurrentStmt& stmt, State entry) {
   }
 
   return end;
+}
+
+State HLCompiler::EmitRewindToStart(State entry) {
+  State rewind = NewState("rewind");
+  State at_start = NewState("at_start");
+
+  // Go to entry, then scan left until blank
+  for (Symbol s : tm_.tape_alphabet) {
+    tm_.AddTransition(entry, s, s, Dir::L, rewind);
+  }
+
+  for (Symbol s : tm_.tape_alphabet) {
+    if (s == kBlank) {
+      // Found left edge, move right onto first input symbol
+      tm_.AddTransition(rewind, s, s, Dir::R, at_start);
+    } else {
+      tm_.AddTransition(rewind, s, s, Dir::L, rewind);
+    }
+  }
+
+  return at_start;
 }
 
 State HLCompiler::CompileExpr(const ExprPtr& expr, const std::string& dest_var, State entry) {
@@ -685,7 +602,36 @@ State HLCompiler::CompileCount(const Count& expr, const std::string& dest_var, S
     tm_.AddTransition(entry, s, s, Dir::S, scan);
   }
 
-  return done;
+  // Restore input: rewind to start, then sweep right replacing marked→original
+  State restore_rewind = NewState("cnt_rrewind");
+  State restore_scan = NewState("cnt_restore");
+  State restore_done = NewState("cnt_rdone");
+
+  // done → rewind to start
+  for (Symbol s : tm_.tape_alphabet) {
+    tm_.AddTransition(done, s, s, Dir::L, restore_rewind);
+  }
+
+  for (Symbol s : tm_.tape_alphabet) {
+    if (s == kBlank) {
+      tm_.AddTransition(restore_rewind, s, s, Dir::R, restore_scan);
+    } else {
+      tm_.AddTransition(restore_rewind, s, s, Dir::L, restore_rewind);
+    }
+  }
+
+  // Sweep right: restore marked symbols, stop at # or blank
+  for (Symbol s : tm_.tape_alphabet) {
+    if (s == marked) {
+      tm_.AddTransition(restore_scan, s, sym, Dir::R, restore_scan);
+    } else if (s == kSep || s == kBlank) {
+      tm_.AddTransition(restore_scan, s, s, Dir::S, restore_done);
+    } else {
+      tm_.AddTransition(restore_scan, s, s, Dir::R, restore_scan);
+    }
+  }
+
+  return restore_done;
 }
 
 State HLCompiler::CompileBinExpr(const BinExpr& expr, const std::string& dest_var, State entry) {
@@ -837,6 +783,406 @@ State HLCompiler::EmitCompareRegionToRegion(State entry, int region_a, int regio
 State HLCompiler::EmitCompareRegions(State entry, int region_a, int region_b,
                                       State if_equal, State if_not_equal) {
   return EmitCompareRegionToRegion(entry, region_a, region_b, if_equal, if_not_equal);
+}
+
+// ==========================================================================
+// VM INSTRUCTION COMPILATION
+// ==========================================================================
+
+State HLCompiler::EmitInsertInRegion(State entry, int region) {
+  // Insert a 1 into the specified region.
+  // Strategy: navigate to the end of the region (the # separator after it,
+  // or blank if it's the last region), write 1 there, then shift everything
+  // after it one cell to the right.
+  //
+  // For the last region: just scan to blank and write 1. No shift needed.
+  // For non-last regions: write 1 at the #, then carry the displaced #
+  // and all subsequent data one cell right.
+
+  // First, navigate to end of target region.
+  // Region 0 is after the 1st #, region 1 after the 2nd #, etc.
+  // We need to find the (region+2)th separator-or-blank.
+  // Actually: tape is _ [input] # [var0] # [var1] # ...
+  // Region 0 starts after 1st #. Region 0 ends at 2nd #.
+  // So end of region N is at separator #(N+2) (or blank if last).
+
+  State nav = NewState("ins_nav");
+  // Connect entry
+  for (Symbol s : tm_.tape_alphabet) {
+    tm_.AddTransition(entry, s, s, Dir::R, nav);
+  }
+
+  // Skip (region + 1) separators to get past input and preceding regions
+  State current = nav;
+  for (int i = 0; i <= region; ++i) {
+    State next = NewState("ins_sep");
+    for (Symbol s : tm_.tape_alphabet) {
+      if (s == kSep) {
+        tm_.AddTransition(current, s, s, Dir::R, next);
+      } else if (s == kBlank) {
+        // Hit end of tape before finding enough separators - this means
+        // the region is the last one (or beyond). Write 1 here.
+        // But this shouldn't happen if regions are set up correctly.
+        tm_.AddTransition(current, s, s, Dir::S, next);
+      } else {
+        tm_.AddTransition(current, s, s, Dir::R, current);
+      }
+    }
+    current = next;
+  }
+
+  // Now current is just past the last separator before our region's data.
+  // Scan through the region's data (1s and Is) to find the end.
+  State scan_data = NewState("ins_data");
+  for (Symbol s : tm_.tape_alphabet) {
+    tm_.AddTransition(current, s, s, Dir::S, scan_data);
+  }
+
+  State at_end = NewState("ins_at_end");
+  for (Symbol s : tm_.tape_alphabet) {
+    if (s == kOne || s == kMarked) {
+      // Still in region data, keep going
+      tm_.AddTransition(scan_data, s, s, Dir::R, scan_data);
+    } else {
+      // Hit # or blank - this is where we insert
+      tm_.AddTransition(scan_data, s, s, Dir::S, at_end);
+    }
+  }
+
+  // at_end: head is on the # (or blank) at the end of the region.
+  // Write 1 here, pick up what was here, shift right.
+  State done = NewState("ins_done");
+
+  // If it's blank, just write 1 - no shifting needed (last region)
+  tm_.AddTransition(at_end, kBlank, kOne, Dir::S, done);
+
+  // If it's #, write 1, carry # rightward
+  // We need carry states for each symbol that might be displaced
+  // Symbols that can appear after a region: #, 1, I, blank
+  State carry_sep = NewState("carry_sep");
+  State carry_one = NewState("carry_one");
+  State carry_mark = NewState("carry_mark");
+
+  tm_.AddTransition(at_end, kSep, kOne, Dir::R, carry_sep);
+
+  // Carry #: read current, write #, pick up current, move right
+  tm_.AddTransition(carry_sep, kBlank, kSep, Dir::S, done);
+  tm_.AddTransition(carry_sep, kSep, kSep, Dir::R, carry_sep);
+  tm_.AddTransition(carry_sep, kOne, kSep, Dir::R, carry_one);
+  tm_.AddTransition(carry_sep, kMarked, kSep, Dir::R, carry_mark);
+  // Input symbols and their marks shouldn't appear here, but be safe
+  for (Symbol s : tm_.tape_alphabet) {
+    if (s != kBlank && s != kSep && s != kOne && s != kMarked) {
+      tm_.AddTransition(carry_sep, s, kSep, Dir::R, carry_one);  // treat as data
+    }
+  }
+
+  // Carry 1
+  tm_.AddTransition(carry_one, kBlank, kOne, Dir::S, done);
+  tm_.AddTransition(carry_one, kSep, kOne, Dir::R, carry_sep);
+  tm_.AddTransition(carry_one, kOne, kOne, Dir::R, carry_one);
+  tm_.AddTransition(carry_one, kMarked, kOne, Dir::R, carry_mark);
+  for (Symbol s : tm_.tape_alphabet) {
+    if (s != kBlank && s != kSep && s != kOne && s != kMarked) {
+      tm_.AddTransition(carry_one, s, kOne, Dir::R, carry_one);
+    }
+  }
+
+  // Carry I (marked)
+  tm_.AddTransition(carry_mark, kBlank, kMarked, Dir::S, done);
+  tm_.AddTransition(carry_mark, kSep, kMarked, Dir::R, carry_sep);
+  tm_.AddTransition(carry_mark, kOne, kMarked, Dir::R, carry_one);
+  tm_.AddTransition(carry_mark, kMarked, kMarked, Dir::R, carry_mark);
+  for (Symbol s : tm_.tape_alphabet) {
+    if (s != kBlank && s != kSep && s != kOne && s != kMarked) {
+      tm_.AddTransition(carry_mark, s, kMarked, Dir::R, carry_one);
+    }
+  }
+
+  // Rewind from done back to start
+  return EmitRewindToStart(done);
+}
+
+State HLCompiler::EmitRestoreRegion(State entry, int region) {
+  // Rewind to start first, then navigate to region, convert all I -> 1, then rewind
+  State at_start = EmitRewindToStart(entry);
+
+  // Navigate from position 0: skip (region+1) separators
+  State nav = NewState("rst_nav");
+  for (Symbol s : tm_.tape_alphabet) {
+    tm_.AddTransition(at_start, s, s, Dir::R, nav);
+  }
+
+  State current = nav;
+  for (int i = 0; i <= region; ++i) {
+    State next = NewState("rst_sep");
+    for (Symbol s : tm_.tape_alphabet) {
+      if (s == kSep) {
+        tm_.AddTransition(current, s, s, Dir::R, next);
+      } else if (s == kBlank) {
+        // Past end of tape - treat as if region found (empty)
+        tm_.AddTransition(current, s, s, Dir::S, next);
+      } else {
+        tm_.AddTransition(current, s, s, Dir::R, current);
+      }
+    }
+    current = next;
+  }
+
+  // Now in the region - sweep, converting I to 1
+  State sweep = NewState("rst_sweep");
+  State done = NewState("rst_done");
+  for (Symbol s : tm_.tape_alphabet) {
+    tm_.AddTransition(current, s, s, Dir::S, sweep);
+  }
+
+  for (Symbol s : tm_.tape_alphabet) {
+    if (s == kMarked) {
+      tm_.AddTransition(sweep, s, kOne, Dir::R, sweep);
+    } else if (s == kOne) {
+      tm_.AddTransition(sweep, s, s, Dir::R, sweep);
+    } else {
+      // Hit # or blank - done with this region
+      tm_.AddTransition(sweep, s, s, Dir::S, done);
+    }
+  }
+
+  return EmitRewindToStart(done);
+}
+
+State HLCompiler::EmitCompareEqual(State entry, int reg_a, int reg_b,
+                                    State if_eq, State if_neq) {
+  // One-to-one matching between two unary regions.
+  // Algorithm: mark pairs of 1s (one from each region), repeat until
+  // one region exhausts. If both exhaust simultaneously: equal.
+  //
+  // Helper lambda to emit "navigate from pos 0 to region R":
+  // skips (R+1) separators, handles blank as implicit stop.
+  // Returns the state positioned at start of region data.
+  auto emitNavToRegion = [&](State start, int region) -> State {
+    State nav = NewState("nav");
+    for (Symbol s : tm_.tape_alphabet) {
+      tm_.AddTransition(start, s, s, Dir::R, nav);
+    }
+    State cur = nav;
+    for (int i = 0; i <= region; ++i) {
+      State next = NewState("navsep");
+      for (Symbol s : tm_.tape_alphabet) {
+        if (s == kSep) {
+          tm_.AddTransition(cur, s, s, Dir::R, next);
+        } else if (s == kBlank) {
+          tm_.AddTransition(cur, s, s, Dir::S, next);
+        } else {
+          tm_.AddTransition(cur, s, s, Dir::R, cur);
+        }
+      }
+      cur = next;
+    }
+    return cur;
+  };
+
+  State restore_eq = NewState("ceq_req");
+  State restore_neq = NewState("ceq_rneq");
+  State a_done = NewState("ceq_adone");
+
+  // Phase 1: Find unmarked 1 in region a
+  State in_a = emitNavToRegion(entry, reg_a);
+
+  State find_b = NewState("ceq_fb");
+  for (Symbol s : tm_.tape_alphabet) {
+    if (s == kOne) {
+      tm_.AddTransition(in_a, s, kMarked, Dir::S, find_b);
+    } else if (s == kMarked) {
+      tm_.AddTransition(in_a, s, s, Dir::R, in_a);
+    } else {
+      // Region a exhausted
+      tm_.AddTransition(in_a, s, s, Dir::S, a_done);
+    }
+  }
+
+  // Phase 2: Rewind, navigate to region b, find unmarked 1
+  State rw_b = EmitRewindToStart(find_b);
+  State in_b = emitNavToRegion(rw_b, reg_b);
+
+  State back_to_a = NewState("ceq_back");
+  for (Symbol s : tm_.tape_alphabet) {
+    if (s == kOne) {
+      tm_.AddTransition(in_b, s, kMarked, Dir::S, back_to_a);
+    } else if (s == kMarked) {
+      tm_.AddTransition(in_b, s, s, Dir::R, in_b);
+    } else {
+      // Region b exhausted first: not equal
+      tm_.AddTransition(in_b, s, s, Dir::S, restore_neq);
+    }
+  }
+
+  // Phase 3: Rewind, go back to region a for next pair
+  State rw_a = EmitRewindToStart(back_to_a);
+  State in_a2 = emitNavToRegion(rw_a, reg_a);
+
+  // Same logic as in_a but reuse find_b
+  for (Symbol s : tm_.tape_alphabet) {
+    if (s == kOne) {
+      tm_.AddTransition(in_a2, s, kMarked, Dir::S, find_b);
+    } else if (s == kMarked) {
+      tm_.AddTransition(in_a2, s, s, Dir::R, in_a2);
+    } else {
+      tm_.AddTransition(in_a2, s, s, Dir::S, a_done);
+    }
+  }
+
+  // Phase 4: Region a exhausted. Check if region b has remaining unmarked 1s.
+  State rw_chk = EmitRewindToStart(a_done);
+  State in_b_chk = emitNavToRegion(rw_chk, reg_b);
+
+  for (Symbol s : tm_.tape_alphabet) {
+    if (s == kOne) {
+      tm_.AddTransition(in_b_chk, s, s, Dir::S, restore_neq);
+    } else if (s == kMarked) {
+      tm_.AddTransition(in_b_chk, s, s, Dir::R, in_b_chk);
+    } else {
+      // Both exhausted: equal
+      tm_.AddTransition(in_b_chk, s, s, Dir::S, restore_eq);
+    }
+  }
+
+  // Restore both regions then branch
+  State after_ra_eq = EmitRestoreRegion(restore_eq, reg_a);
+  State after_rb_eq = EmitRestoreRegion(after_ra_eq, reg_b);
+  for (Symbol s : tm_.tape_alphabet) {
+    if (tm_.delta[after_rb_eq].find(s) == tm_.delta[after_rb_eq].end()) {
+      tm_.AddTransition(after_rb_eq, s, s, Dir::S, if_eq);
+    }
+  }
+
+  State after_ra_neq = EmitRestoreRegion(restore_neq, reg_a);
+  State after_rb_neq = EmitRestoreRegion(after_ra_neq, reg_b);
+  for (Symbol s : tm_.tape_alphabet) {
+    if (tm_.delta[after_rb_neq].find(s) == tm_.delta[after_rb_neq].end()) {
+      tm_.AddTransition(after_rb_neq, s, s, Dir::S, if_neq);
+    }
+  }
+
+  return if_eq;
+}
+
+State HLCompiler::EmitAppendNonDestructive(State entry, int src, int dst) {
+  // Copy src region to dst region without destroying src.
+  // 1. Navigate to src, find unmarked 1, mark as I
+  // 2. Insert a 1 into dst (using EmitInsertInRegion)
+  // 3. Rewind, repeat from 1
+  // 4. When src exhausted: restore src marks (I -> 1)
+
+  State loop_start = NewState("appnd_loop");
+  State find_src = NewState("appnd_find");
+  State insert = NewState("appnd_ins");
+  State src_done = NewState("appnd_done");
+
+  // Connect entry to loop start
+  for (Symbol s : tm_.tape_alphabet) {
+    tm_.AddTransition(entry, s, s, Dir::S, loop_start);
+  }
+
+  // Navigate to src region from position 0
+  State nav = loop_start;
+  for (Symbol s : tm_.tape_alphabet) {
+    tm_.AddTransition(nav, s, s, Dir::R, find_src);
+  }
+
+  State cur = find_src;
+  for (int i = 0; i <= src; ++i) {
+    State next = NewState("appnd_nav");
+    for (Symbol s : tm_.tape_alphabet) {
+      if (s == kSep) {
+        tm_.AddTransition(cur, s, s, Dir::R, next);
+      } else if (s == kBlank) {
+        tm_.AddTransition(cur, s, s, Dir::S, next);
+      } else {
+        tm_.AddTransition(cur, s, s, Dir::R, cur);
+      }
+    }
+    cur = next;
+  }
+
+  // In src region: find unmarked 1
+  for (Symbol s : tm_.tape_alphabet) {
+    if (s == kOne) {
+      tm_.AddTransition(cur, s, kMarked, Dir::S, insert);
+    } else if (s == kMarked) {
+      tm_.AddTransition(cur, s, s, Dir::R, cur);
+    } else {
+      // # or blank: src exhausted
+      tm_.AddTransition(cur, s, s, Dir::S, src_done);
+    }
+  }
+
+  // insert: rewind to start, then insert 1 into dst
+  State pre_insert = EmitRewindToStart(insert);
+  State after_insert = EmitInsertInRegion(pre_insert, dst);
+
+  // after_insert returns at position 0. Loop back.
+  for (Symbol s : tm_.tape_alphabet) {
+    if (tm_.delta[after_insert].find(s) == tm_.delta[after_insert].end()) {
+      tm_.AddTransition(after_insert, s, s, Dir::S, loop_start);
+    }
+  }
+
+  // src_done: restore src marks
+  State pre_restore = EmitRewindToStart(src_done);
+  State after_restore = EmitRestoreRegion(pre_restore, src);
+
+  return after_restore;
+}
+
+State HLCompiler::CompileInc(const IncStmt& stmt, State entry) {
+  VarInfo& var = GetVar(stmt.reg);
+  State after = EmitInsertInRegion(entry, var.index);
+  return after;  // EmitInsertInRegion already rewinds
+}
+
+State HLCompiler::CompileAppend(const AppendStmt& stmt, State entry) {
+  VarInfo& src = GetVar(stmt.src);
+  VarInfo& dst = GetVar(stmt.dst);
+  return EmitAppendNonDestructive(entry, src.index, dst.index);
+}
+
+State HLCompiler::CompileBreak(const BreakStmt& stmt, State entry) {
+  if (break_targets_.empty()) {
+    throw std::runtime_error("break outside of loop");
+  }
+  State target = break_targets_.top();
+  // Wire entry to break target
+  for (Symbol s : tm_.tape_alphabet) {
+    tm_.AddTransition(entry, s, s, Dir::S, target);
+  }
+  return target;
+}
+
+State HLCompiler::CompileIfEq(const IfEqStmt& stmt, State entry) {
+  VarInfo& a = GetVar(stmt.reg_a);
+  VarInfo& b = GetVar(stmt.reg_b);
+
+  State then_st = NewState("ifeq_then");
+  State else_st = NewState("ifeq_else");
+  State end_st = NewState("ifeq_end");
+
+  EmitCompareEqual(entry, a.index, b.index, then_st, else_st);
+
+  // Compile branches
+  State then_done = CompileStmts(stmt.then_body, then_st);
+  State else_done = stmt.else_body.empty() ? else_st : CompileStmts(stmt.else_body, else_st);
+
+  // Join (skip if ended at accept/reject/break)
+  for (Symbol s : tm_.tape_alphabet) {
+    if (tm_.delta[then_done].find(s) == tm_.delta[then_done].end()) {
+      tm_.AddTransition(then_done, s, s, Dir::S, end_st);
+    }
+    if (tm_.delta[else_done].find(s) == tm_.delta[else_done].end()) {
+      tm_.AddTransition(else_done, s, s, Dir::S, end_st);
+    }
+  }
+
+  return EmitRewindToStart(end_st);
 }
 
 TM CompileProgram(const Program& program) {

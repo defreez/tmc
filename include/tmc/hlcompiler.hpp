@@ -2,6 +2,7 @@
 
 #include "tmc/ir.hpp"
 #include <unordered_map>
+#include <stack>
 
 namespace tmc {
 
@@ -58,13 +59,21 @@ private:
   State CompileMove(const MoveStmt& stmt, State entry);
   State CompileLoop(const LoopStmt& stmt, State entry);
   State CompileIfCurrent(const IfCurrentStmt& stmt, State entry);
-  State CompileMatch(const MatchStmt& stmt, State entry);
+
+  // VM instruction compilation
+  State CompileInc(const IncStmt& stmt, State entry);
+  State CompileAppend(const AppendStmt& stmt, State entry);
+  State CompileBreak(const BreakStmt& stmt, State entry);
+  State CompileIfEq(const IfEqStmt& stmt, State entry);
 
   // Expression compilation - evaluates expr, stores result in dest_var
   // Returns the exit state
   State CompileExpr(const ExprPtr& expr, const std::string& dest_var, State entry);
   State CompileCount(const Count& expr, const std::string& dest_var, State entry);
   State CompileBinExpr(const BinExpr& expr, const std::string& dest_var, State entry);
+
+  // Head management - rewind head to position 0 (left blank before input)
+  State EmitRewindToStart(State entry);
 
   // Primitive tape operations
   State EmitScanTo(State entry, Symbol target, Dir dir);
@@ -77,6 +86,20 @@ private:
   State EmitIncrementRegion(State entry, int region);
   State EmitCompareRegionToRegion(State entry, int region_a, int region_b,
                                   State if_le, State if_gt);
+
+  // VM instruction helpers
+  // Insert a 1 into a region, shifting all subsequent data right if needed
+  State EmitInsertInRegion(State entry, int region);
+  // Compare two regions for equality, branching to if_eq/if_neq
+  State EmitCompareEqual(State entry, int reg_a, int reg_b,
+                         State if_eq, State if_neq);
+  // Non-destructive append: copy src region to dst region without destroying src
+  State EmitAppendNonDestructive(State entry, int src, int dst);
+  // Restore marks in a region (I -> 1)
+  State EmitRestoreRegion(State entry, int region);
+
+  // Break target stack for loop compilation
+  std::stack<State> break_targets_;
 };
 
 // Convenience function

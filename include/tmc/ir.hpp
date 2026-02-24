@@ -164,13 +164,6 @@ struct RejectStmt : Stmt {
   std::string kind() const override { return "RejectStmt"; }
 };
 
-// Match regex pattern against input: match a*b*
-struct MatchStmt : Stmt {
-  std::string pattern;  // e.g., "a*b*"
-  explicit MatchStmt(const std::string& p) : pattern(p) {}
-  std::string kind() const override { return "MatchStmt"; }
-};
-
 //=============================================================================
 // IMPERATIVE TAPE STATEMENTS
 //=============================================================================
@@ -207,6 +200,39 @@ struct IfCurrentStmt : Stmt {
   std::map<Symbol, std::vector<StmtPtr>> branches;  // symbol -> body
   std::vector<StmtPtr> else_body;
   std::string kind() const override { return "IfCurrentStmt"; }
+};
+
+//=============================================================================
+// VM INSTRUCTIONS
+//=============================================================================
+
+// Increment region by 1: inc i
+struct IncStmt : Stmt {
+  std::string reg;
+  explicit IncStmt(const std::string& r) : reg(r) {}
+  std::string kind() const override { return "IncStmt"; }
+};
+
+// Append src region to dst region (dst += src): append i -> sum
+struct AppendStmt : Stmt {
+  std::string src;
+  std::string dst;
+  AppendStmt(const std::string& s, const std::string& d) : src(s), dst(d) {}
+  std::string kind() const override { return "AppendStmt"; }
+};
+
+// Break out of innermost loop: break
+struct BreakStmt : Stmt {
+  std::string kind() const override { return "BreakStmt"; }
+};
+
+// Compare two regions and branch: if a == b { ... } else { ... }
+struct IfEqStmt : Stmt {
+  std::string reg_a;
+  std::string reg_b;
+  std::vector<StmtPtr> then_body;
+  std::vector<StmtPtr> else_body;
+  std::string kind() const override { return "IfEqStmt"; }
 };
 
 //=============================================================================

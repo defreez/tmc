@@ -211,5 +211,134 @@ TEST(HLCompilerTest, StepCountingDeterministic) {
   }
 }
 
+// Oracle: accept iff count(a) == count(b) regardless of order
+bool CountAEqCountB(const std::string& s) {
+  int a_count = 0, b_count = 0;
+  for (char c : s) {
+    if (c == 'a') ++a_count;
+    else if (c == 'b') ++b_count;
+    else return false;
+  }
+  return a_count == b_count;
+}
+
+// Exhaustive oracle test: n = count(a); return count(b) == n
+// Verifies compiled TM matches oracle on ALL strings up to length 8
+TEST(HLCompilerTest, ExhaustiveCountAEqCountB) {
+  std::string src = R"(
+alphabet input: [a, b]
+n = count(a)
+return count(b) == n
+)";
+
+  Program prog = ParseHL(src);
+  TM tm = CompileProgram(prog);
+
+  std::string error;
+  ASSERT_TRUE(tm.Validate(&error)) << error;
+
+  Simulator sim(tm);
+  auto inputs = AllStrings({'a', 'b'}, 8);
+
+  int tested = 0;
+  for (const auto& input : inputs) {
+    bool expected = CountAEqCountB(input);
+    auto result = sim.Run(input);
+    EXPECT_EQ(result.accepted, expected)
+        << "input=\"" << input << "\" (len " << input.size() << "): "
+        << "oracle=" << (expected ? "accept" : "reject")
+        << ", TM=" << (result.accepted ? "accept" : "reject")
+        << (result.hit_limit ? " (HIT STEP LIMIT)" : "");
+    ++tested;
+  }
+  EXPECT_EQ(tested, 511);  // 2^0 + 2^1 + ... + 2^8
+}
+
+// Count restores input: n = count(a); return count(a) == n
+// Should accept everything because count(a) == count(a) is always true.
+// If the restore sweep is broken, the second count(a) in the return
+// would find 0 a's (still marked as A) and reject any input with a's.
+TEST(HLCompilerTest, CountRestoresInput) {
+  std::string src = R"(
+alphabet input: [a, b]
+n = count(a)
+return count(a) == n
+)";
+
+  Program prog = ParseHL(src);
+  TM tm = CompileProgram(prog);
+
+  std::string error;
+  ASSERT_TRUE(tm.Validate(&error)) << error;
+
+  Simulator sim(tm);
+  auto inputs = AllStrings({'a', 'b'}, 8);
+
+  for (const auto& input : inputs) {
+    auto result = sim.Run(input);
+    EXPECT_TRUE(result.accepted)
+        << "input=\"" << input << "\" should accept (count(a)==count(a)) "
+        << "but got reject"
+        << (result.hit_limit ? " (HIT STEP LIMIT)" : "");
+  }
+}
+
+// Exhaustive T(n) triangular number test.
+// Accepts {a^n b^m : m = n*(n+1)/2} using VM instructions:
+// structural check (scan + if-current), count, inc, append, loop, break, if-eq
+TEST(HLCompilerTest, ExhaustiveTriangular) {
+  std::string src = R"(
+alphabet input: [a, b]
+
+scan right for [b, _]
+if b {
+  scan right for [a, _]
+  if a { reject }
+}
+
+n = count(a)
+m = count(b)
+sum = 0
+i = 0
+z = 0
+
+if n == z {
+  if sum == m { accept }
+  reject
+}
+
+loop {
+  inc i
+  append i -> sum
+  if i == n { break }
+}
+
+if sum == m { accept }
+reject
+)";
+
+  Program prog = ParseHL(src);
+  TM tm = CompileProgram(prog);
+
+  std::string error;
+  ASSERT_TRUE(tm.Validate(&error)) << error;
+
+  Simulator sim(tm, 10000000);  // generous step limit for complex VM
+  auto inputs = AllStrings({'a', 'b'}, 8);
+
+  int tested = 0;
+  for (const auto& input : inputs) {
+    bool expected = IsTriangular(input);
+    auto result = sim.Run(input);
+    EXPECT_EQ(result.accepted, expected)
+        << "input=\"" << input << "\" (len " << input.size() << "): "
+        << "oracle=" << (expected ? "accept" : "reject")
+        << ", TM=" << (result.accepted ? "accept" : "reject")
+        << (result.hit_limit ? " (HIT STEP LIMIT)" : "");
+    ++tested;
+  }
+  EXPECT_EQ(tested, 511);
+}
+
 }  // namespace
 }  // namespace tmc
