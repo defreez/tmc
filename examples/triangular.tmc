@@ -1,0 +1,23 @@
+# TMC - Triangular Number Language
+# Decides: { a^n b^m | m = T(n) } where T(n) = n*(n+1)/2
+
+alphabet input: [a, b]
+
+# Approach 1: Iterative sum
+n = count(a)
+sum = 0
+for i in 1..n {
+  sum = sum + i
+}
+return count(b) == sum
+
+# Approach 2: Direct formula (requires mul and div)
+# n = count(a)
+# return count(b) == (n * (n + 1)) / 2
+
+# Approach 3: Matching pattern (most TM-native)
+# For each a at position i, match i b's
+# for i in 1..count(a) {
+#   match(b, i)  # mark exactly i b's
+# }
+# return all_matched(b)
