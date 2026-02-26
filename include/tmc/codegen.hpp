@@ -8,6 +8,9 @@ namespace tmc {
 // Convert a TM to YAML format for Doty's simulator
 std::string ToYAML(const TM& tm);
 
+// Parse a TM from Doty's YAML format (.tm files)
+TM FromYAML(const std::string& yaml);
+
 // Compile IR program to TM
 TM CompileIR(const IRProgram& program);
 

@@ -1,5 +1,6 @@
 #include "tmc/codegen.hpp"
 #include <algorithm>
+#include <stdexcept>
 
 namespace tmc {
 
@@ -100,6 +101,161 @@ std::string ToYAML(const TM& tm) {
   }
 
   return out.str();
+}
+
+// Parse a symbol token from YAML (handles quoting like '#', '>')
+namespace {
+
+std::string Trim(const std::string& s) {
+  size_t start = s.find_first_not_of(" \t\r\n");
+  if (start == std::string::npos) return "";
+  size_t end = s.find_last_not_of(" \t\r\n");
+  return s.substr(start, end - start + 1);
+}
+
+// Strip surrounding single quotes from a YAML token
+std::string Unquote(const std::string& s) {
+  if (s.size() >= 2 && s.front() == '\'' && s.back() == '\'') {
+    return s.substr(1, s.size() - 2);
+  }
+  return s;
+}
+
+Symbol ParseSymbol(const std::string& raw) {
+  std::string s = Trim(raw);
+  s = Unquote(s);
+  if (s == "_") return kBlank;
+  if (s.size() != 1) {
+    throw std::runtime_error("Invalid symbol in YAML: '" + raw + "'");
+  }
+  return s[0];
+}
+
+Dir ParseDir(const std::string& raw) {
+  std::string s = Trim(raw);
+  if (s == "L") return Dir::L;
+  if (s == "R") return Dir::R;
+  if (s == "S") return Dir::S;
+  throw std::runtime_error("Invalid direction in YAML: '" + raw + "'");
+}
+
+// Parse a YAML inline list like [a, b, c] into tokens
+std::vector<std::string> ParseList(const std::string& line) {
+  std::vector<std::string> result;
+  size_t open = line.find('[');
+  size_t close = line.rfind(']');
+  if (open == std::string::npos || close == std::string::npos) return result;
+
+  std::string inner = line.substr(open + 1, close - open - 1);
+
+  // Split on commas, but respect single quotes
+  std::string token;
+  bool in_quote = false;
+  for (char c : inner) {
+    if (c == '\'' ) {
+      in_quote = !in_quote;
+      token += c;
+    } else if (c == ',' && !in_quote) {
+      result.push_back(Trim(token));
+      token.clear();
+    } else {
+      token += c;
+    }
+  }
+  if (!Trim(token).empty()) {
+    result.push_back(Trim(token));
+  }
+  return result;
+}
+
+// Get value after "key: value"
+std::string ValueAfterColon(const std::string& line) {
+  size_t pos = line.find(':');
+  if (pos == std::string::npos) return "";
+  return Trim(line.substr(pos + 1));
+}
+
+}  // namespace
+
+TM FromYAML(const std::string& yaml) {
+  TM tm;
+  std::istringstream in(yaml);
+  std::string line;
+
+  std::string current_state;
+  bool in_delta = false;
+
+  while (std::getline(in, line)) {
+    // Strip trailing \r for Windows line endings
+    if (!line.empty() && line.back() == '\r') line.pop_back();
+
+    std::string trimmed = Trim(line);
+    if (trimmed.empty() || trimmed[0] == '#') continue;  // skip comments/blanks
+
+    // Detect indentation level
+    size_t indent = line.find_first_not_of(' ');
+
+    if (trimmed.rfind("states:", 0) == 0) {
+      // Parse states list (we don't strictly need this since Finalize builds it)
+      in_delta = false;
+      continue;
+    } else if (trimmed.rfind("input_alphabet:", 0) == 0) {
+      in_delta = false;
+      auto tokens = ParseList(trimmed);
+      for (const auto& t : tokens) {
+        tm.input_alphabet.insert(ParseSymbol(t));
+      }
+    } else if (trimmed.rfind("tape_alphabet_extra:", 0) == 0) {
+      in_delta = false;
+      auto tokens = ParseList(trimmed);
+      for (const auto& t : tokens) {
+        tm.tape_alphabet.insert(ParseSymbol(t));
+      }
+    } else if (trimmed.rfind("start_state:", 0) == 0) {
+      in_delta = false;
+      tm.start = Unquote(ValueAfterColon(trimmed));
+    } else if (trimmed.rfind("accept_state:", 0) == 0) {
+      in_delta = false;
+      tm.accept = Unquote(ValueAfterColon(trimmed));
+    } else if (trimmed.rfind("reject_state:", 0) == 0) {
+      in_delta = false;
+      tm.reject = Unquote(ValueAfterColon(trimmed));
+    } else if (trimmed.rfind("delta:", 0) == 0) {
+      in_delta = true;
+    } else if (in_delta) {
+      // Inside delta section
+      if (indent == 2) {
+        // State name line: "  state_name:"
+        current_state = Unquote(Trim(trimmed.substr(0, trimmed.size() - 1)));  // strip trailing ':'
+      } else if (indent >= 4 && !current_state.empty()) {
+        // Transition line: "    symbol: [next, write, dir]"
+        size_t colon_pos = trimmed.find(':');
+        if (colon_pos == std::string::npos) continue;
+
+        std::string sym_str = Trim(trimmed.substr(0, colon_pos));
+        Symbol read_sym = ParseSymbol(sym_str);
+
+        auto tokens = ParseList(trimmed);
+        if (tokens.size() != 3) {
+          throw std::runtime_error("Expected 3 elements in transition: " + trimmed);
+        }
+
+        State next_state = Unquote(tokens[0]);
+        Symbol write_sym = ParseSymbol(tokens[1]);
+        Dir dir = ParseDir(tokens[2]);
+
+        tm.AddTransition(current_state, read_sym, write_sym, dir, next_state);
+      }
+    }
+  }
+
+  // Add input alphabet to tape alphabet
+  for (Symbol s : tm.input_alphabet) {
+    tm.tape_alphabet.insert(s);
+  }
+
+  tm.Finalize();
+  return tm;
 }
 
 // StateGen implementation

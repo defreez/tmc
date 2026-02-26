@@ -42,8 +42,12 @@ add_executable(tmc_tests
     tests/test_hlcompiler.cpp
     tests/test_hlcompiler_debug.cpp
     tests/test_examples.cpp
+    tests/test_hw3a.cpp
 )
 target_include_directories(tmc_tests PRIVATE include)
-target_compile_definitions(tmc_tests PRIVATE EXAMPLES_DIR="${CMAKE_SOURCE_DIR}/examples")
+target_compile_definitions(tmc_tests PRIVATE
+    EXAMPLES_DIR="${CMAKE_SOURCE_DIR}/examples"
+    FIXTURES_DIR="${CMAKE_SOURCE_DIR}/tests/fixtures"
+)
 target_link_libraries(tmc_tests PRIVATE tmc_core GTest::gtest_main)
 add_test(NAME TMCTests COMMAND tmc_tests)

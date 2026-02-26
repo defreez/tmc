@@ -8,18 +8,60 @@
 #include <iostream>
 #include <fstream>
 #include <sstream>
+#include <iomanip>
+#include <vector>
+
+// Parse test suite: # comments, (empty) for empty string, one input per line
+std::vector<std::string> ParseTestSuite(const std::string& path) {
+  std::ifstream ifs(path);
+  if (!ifs) {
+    std::cerr << "Error: Cannot open test suite: " << path << "\n";
+    return {};
+  }
+  std::vector<std::string> inputs;
+  std::string line;
+  while (std::getline(ifs, line)) {
+    if (!line.empty() && line.back() == '\r') line.pop_back();
+    if (line.empty() || line[0] == '#') continue;
+    if (line == "(empty)") {
+      inputs.push_back("");
+    } else {
+      inputs.push_back(line);
+    }
+  }
+  return inputs;
+}
+
+// Oracle for { a^n b^m | m = n*(n+1)/2 }
+bool IsTriangular(const std::string& s) {
+  int n = 0, m = 0;
+  bool in_b = false;
+  for (char c : s) {
+    if (c == 'a') {
+      if (in_b) return false;
+      ++n;
+    } else if (c == 'b') {
+      in_b = true;
+      ++m;
+    } else {
+      return false;
+    }
+  }
+  return m == n * (n + 1) / 2;
+}
 
 void PrintUsage(const char* prog) {
   std::cerr << "TMC - Turing Machine Compiler\n\n";
-  std::cerr << "Usage: " << prog << " [options] <source.tmc>\n";
+  std::cerr << "Usage: " << prog << " [options] <source.tmc|source.tm>\n";
   std::cerr << "\nOptions:\n";
-  std::cerr << "  -o <file>     Output YAML file (default: stdout)\n";
-  std::cerr << "  -t <string>   Test input string after compilation\n";
-  std::cerr << "  -v            Verbose output\n";
-  std::cerr << "  --no-opt      Disable optimizations\n";
+  std::cerr << "  -o <file>         Output YAML file (default: stdout)\n";
+  std::cerr << "  -t <string>       Test input string after compilation\n";
+  std::cerr << "  -v                Verbose output\n";
+  std::cerr << "  --no-opt          Disable optimizations\n";
   std::cerr << "  --precompute <n>  Precompute results for inputs up to length n\n";
   std::cerr << "  --max-states <n>  Maximum states to generate\n";
   std::cerr << "  --max-symbols <n> Maximum tape alphabet size\n";
+  std::cerr << "  --bench <file>    Benchmark against test suite file\n";
 }
 
 int main(int argc, char* argv[]) {
@@ -31,6 +73,7 @@ int main(int argc, char* argv[]) {
   std::string input_file;
   std::string output_file;
   std::string test_input;
+  std::string bench_file;
   bool verbose = false;
   bool optimize = true;
   int precompute_len = 0;
@@ -53,6 +96,8 @@ int main(int argc, char* argv[]) {
       max_states = std::stoi(argv[++i]);
     } else if (arg == "--max-symbols" && i + 1 < argc) {
       max_symbols = std::stoi(argv[++i]);
+    } else if (arg == "--bench" && i + 1 < argc) {
+      bench_file = argv[++i];
     } else if (arg[0] != '-') {
       input_file = arg;
     } else {
@@ -79,32 +124,41 @@ int main(int argc, char* argv[]) {
   std::string source = buffer.str();
 
   try {
-    // Detect DSL type: high-level uses "alphabet input:", low-level uses "states:"
-    bool high_level = source.find("alphabet input:") != std::string::npos;
+    // Detect if input is a pre-compiled .tm YAML file
+    bool is_yaml = input_file.size() >= 3 &&
+                   input_file.substr(input_file.size() - 3) == ".tm";
 
-    if (verbose) std::cerr << "Parsing " << input_file
-                           << " (" << (high_level ? "high-level" : "low-level IR") << ")...\n";
+    tmc::TM tm;
 
-    tmc::TM tm = [&]() {
+    if (is_yaml) {
+      if (verbose) std::cerr << "Loading YAML TM from " << input_file << "...\n";
+      tm = tmc::FromYAML(source);
+    } else {
+      // Detect DSL type: high-level uses "alphabet input:", low-level uses "states:"
+      bool high_level = source.find("alphabet input:") != std::string::npos;
+
+      if (verbose) std::cerr << "Parsing " << input_file
+                             << " (" << (high_level ? "high-level" : "low-level IR") << ")...\n";
+
       if (high_level) {
         tmc::Program program = tmc::ParseHL(source);
         if (verbose) std::cerr << "Compiling to TM...\n";
-        return tmc::CompileProgram(program);
+        tm = tmc::CompileProgram(program);
       } else {
         tmc::IRProgram program = tmc::Parse(source);
         if (verbose) std::cerr << "Compiling to TM...\n";
-        return tmc::CompileIR(program);
+        tm = tmc::CompileIR(program);
       }
-    }();
 
-    // Optimize
-    if (optimize) {
-      if (verbose) std::cerr << "Optimizing...\n";
-      tmc::OptConfig config;
-      config.max_states = max_states;
-      config.max_tape_symbols = max_symbols;
-      config.precompute_max_input_len = precompute_len;
-      tmc::Optimize(tm, config);
+      // Optimize (only for compiled TMs, not pre-compiled YAML)
+      if (optimize) {
+        if (verbose) std::cerr << "Optimizing...\n";
+        tmc::OptConfig config;
+        config.max_states = max_states;
+        config.max_tape_symbols = max_symbols;
+        config.precompute_max_input_len = precompute_len;
+        tmc::Optimize(tm, config);
+      }
     }
 
     // Validate
@@ -112,6 +166,76 @@ int main(int argc, char* argv[]) {
     if (!tm.Validate(&error)) {
       std::cerr << "Error: Invalid TM: " << error << "\n";
       return 1;
+    }
+
+    // Benchmark mode
+    if (!bench_file.empty()) {
+      auto inputs = ParseTestSuite(bench_file);
+      if (inputs.empty()) {
+        std::cerr << "Error: No test inputs loaded from " << bench_file << "\n";
+        return 1;
+      }
+
+      std::cerr << "TM: " << tm.states.size() << " states, ";
+      int transitions = 0;
+      for (const auto& [state, trans_map] : tm.delta) {
+        transitions += static_cast<int>(trans_map.size());
+      }
+      std::cerr << transitions << " transitions\n\n";
+
+      tmc::Simulator sim(tm, 10000000);
+
+      int passed = 0, failed = 0;
+      long long total_steps = 0;
+      int max_steps = 0;
+      int max_steps_n = 0;
+      int max_steps_len = 0;
+
+      for (size_t i = 0; i < inputs.size(); ++i) {
+        const std::string& input = inputs[i];
+        bool expected = IsTriangular(input);
+        auto result = sim.Run(input);
+
+        int n = 0;
+        for (char c : input) {
+          if (c == 'a') ++n;
+          else break;
+        }
+
+        total_steps += result.steps;
+        if (result.steps > max_steps) {
+          max_steps = result.steps;
+          max_steps_n = n;
+          max_steps_len = static_cast<int>(input.size());
+        }
+
+        bool correct = (result.accepted == expected) && !result.hit_limit;
+
+        std::cout << "[" << std::setw(2) << (i + 1) << "/" << inputs.size() << "] "
+                  << "n=" << std::setw(2) << n
+                  << " |w|=" << std::setw(4) << input.size()
+                  << "  expect=" << (expected ? "ACC" : "REJ")
+                  << " got=" << (result.accepted ? "ACC" : "REJ")
+                  << "  steps=" << std::setw(8) << result.steps;
+        if (result.hit_limit) std::cout << " HIT_LIMIT";
+        if (!correct) std::cout << " FAIL";
+        std::cout << "\n";
+
+        if (correct) ++passed;
+        else ++failed;
+      }
+
+      double avg_steps = static_cast<double>(total_steps) / inputs.size();
+
+      std::cout << "\n=== Summary ===\n";
+      std::cout << "Passed:  " << passed << "/" << inputs.size() << "\n";
+      if (failed > 0) std::cout << "Failed:  " << failed << "\n";
+      std::cout << "Total:   " << total_steps << " steps\n";
+      std::cout << "Average: " << std::fixed << std::setprecision(1) << avg_steps << " steps\n";
+      std::cout << "Max:     " << max_steps << " steps"
+                << " (n=" << max_steps_n << ", |w|=" << max_steps_len << ")\n";
+
+      return failed > 0 ? 1 : 0;
     }
 
     // Output YAML
