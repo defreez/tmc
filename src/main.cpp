@@ -10,6 +10,7 @@
 #include <sstream>
 #include <iomanip>
 #include <vector>
+#include <chrono>
 
 // Parse test suite: # comments, (empty) for empty string, one input per line
 std::vector<std::string> ParseTestSuite(const std::string& path) {
@@ -184,6 +185,7 @@ int main(int argc, char* argv[]) {
       std::cerr << transitions << " transitions\n\n";
 
       tmc::Simulator sim(tm, 10000000);
+      using Clock = std::chrono::high_resolution_clock;
 
       int passed = 0, failed = 0;
       long long total_steps = 0;
@@ -191,10 +193,16 @@ int main(int argc, char* argv[]) {
       int max_steps_n = 0;
       int max_steps_len = 0;
 
+      auto bench_start = Clock::now();
+
       for (size_t i = 0; i < inputs.size(); ++i) {
         const std::string& input = inputs[i];
         bool expected = IsTriangular(input);
+
+        auto t0 = Clock::now();
         auto result = sim.Run(input);
+        auto t1 = Clock::now();
+        double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
 
         int n = 0;
         for (char c : input) {
@@ -211,21 +219,31 @@ int main(int argc, char* argv[]) {
 
         bool correct = (result.accepted == expected) && !result.hit_limit;
 
+        double case_rate = ms > 0 ? result.steps / (ms / 1000.0) : 0;
+        double elapsed_ms = std::chrono::duration<double, std::milli>(t1 - bench_start).count();
+        double cumul_rate = elapsed_ms > 0 ? total_steps / (elapsed_ms / 1000.0) : 0;
+
         std::cout << "[" << std::setw(2) << (i + 1) << "/" << inputs.size() << "] "
                   << "n=" << std::setw(2) << n
                   << " |w|=" << std::setw(4) << input.size()
-                  << "  expect=" << (expected ? "ACC" : "REJ")
-                  << " got=" << (result.accepted ? "ACC" : "REJ")
-                  << "  steps=" << std::setw(8) << result.steps;
+                  << " " << (expected ? "ACC" : "REJ")
+                  << (correct ? " " : " FAIL ")
+                  << " steps=" << std::setw(8) << result.steps
+                  << std::fixed << std::setprecision(1)
+                  << "  " << std::setw(7) << ms << "ms"
+                  << "  " << std::setprecision(1) << std::setw(5) << case_rate / 1e6 << "M st/s"
+                  << "  cumul " << std::setw(5) << cumul_rate / 1e6 << "M st/s";
         if (result.hit_limit) std::cout << " HIT_LIMIT";
-        if (!correct) std::cout << " FAIL";
         std::cout << "\n";
 
         if (correct) ++passed;
         else ++failed;
       }
 
+      auto bench_end = Clock::now();
+      double total_ms = std::chrono::duration<double, std::milli>(bench_end - bench_start).count();
       double avg_steps = static_cast<double>(total_steps) / inputs.size();
+      double steps_per_sec = total_ms > 0 ? total_steps / (total_ms / 1000.0) : 0;
 
       std::cout << "\n=== Summary ===\n";
       std::cout << "Passed:  " << passed << "/" << inputs.size() << "\n";
@@ -234,6 +252,8 @@ int main(int argc, char* argv[]) {
       std::cout << "Average: " << std::fixed << std::setprecision(1) << avg_steps << " steps\n";
       std::cout << "Max:     " << max_steps << " steps"
                 << " (n=" << max_steps_n << ", |w|=" << max_steps_len << ")\n";
+      std::cout << "Wall:    " << std::fixed << std::setprecision(1) << total_ms << "ms"
+                << " (" << std::setprecision(0) << steps_per_sec / 1e6 << "M steps/sec)\n";
 
       return failed > 0 ? 1 : 0;
     }
