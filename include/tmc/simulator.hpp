@@ -24,7 +24,7 @@ struct Config {
 
 // Pre-expanded transition entry for flat table lookup
 struct FlatTransition {
-  uint16_t next;   // next state ID
+  uint32_t next;   // next state ID
   uint8_t write;   // symbol index to write
   int8_t dir;      // -1, 0, +1
 };
@@ -53,10 +53,10 @@ private:
   // Flat transition table: table_[state_id * num_symbols_ + symbol_idx]
   int num_states_;
   int num_symbols_;
-  uint16_t start_id_;
-  uint16_t accept_id_;
-  uint16_t reject_id_;
-  uint16_t halt_threshold_;  // min(accept_id, reject_id)
+  uint32_t start_id_;
+  uint32_t accept_id_;
+  uint32_t reject_id_;
+  uint32_t halt_threshold_;  // min(accept_id, reject_id)
   std::vector<FlatTransition> table_;
 
   // Symbol mapping
@@ -70,7 +70,7 @@ private:
   // Runtime state
   std::vector<uint8_t> tape_;
   int head_;
-  uint16_t state_id_;
+  uint32_t state_id_;
   int64_t steps_;
   bool halted_;
 };

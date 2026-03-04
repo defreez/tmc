@@ -33,7 +33,7 @@ void Simulator::BuildTable(const TM& tm) {
   // --- State mapping: string -> dense integer ID ---
   // Assign accept and reject as the two highest IDs so that
   // all "running" states have IDs < halt_threshold_.
-  std::unordered_map<std::string, uint16_t> state_to_id;
+  std::unordered_map<std::string, uint32_t> state_to_id;
 
   // First pass: collect non-halt states
   std::vector<State> running_states;
@@ -45,7 +45,7 @@ void Simulator::BuildTable(const TM& tm) {
 
   id_to_state_.clear();
   id_to_state_.reserve(tm.states.size());
-  uint16_t id = 0;
+  uint32_t id = 0;
   for (const auto& s : running_states) {
     state_to_id[s] = id;
     id_to_state_.push_back(s);
@@ -79,7 +79,7 @@ void Simulator::BuildTable(const TM& tm) {
   for (const auto& [state_str, trans_map] : tm.delta) {
     auto sit = state_to_id.find(state_str);
     if (sit == state_to_id.end()) continue;
-    uint16_t sid = sit->second;
+    uint32_t sid = sit->second;
 
     // Find wildcard transition if any
     const Transition* wildcard = nullptr;
@@ -138,13 +138,13 @@ RunResult Simulator::Run(const std::string& input) {
     // tape[0] is already blank_idx_
   }
 
-  uint16_t state = start_id_;
+  uint32_t state = start_id_;
   int head = 0;
   int64_t steps = 0;
   const int64_t max = max_steps_;
   const int stride = num_symbols_;
   const FlatTransition* tbl = table_.data();
-  const uint16_t halt = halt_threshold_;
+  const uint32_t halt = halt_threshold_;
 
   while (state < halt && steps < max) {
     // Extend tape if needed
