@@ -184,12 +184,12 @@ int main(int argc, char* argv[]) {
       }
       std::cerr << transitions << " transitions\n\n";
 
-      tmc::Simulator sim(tm, 10000000);
+      tmc::Simulator sim(tm, 86000000000LL);
       using Clock = std::chrono::high_resolution_clock;
 
       int passed = 0, failed = 0;
       long long total_steps = 0;
-      int max_steps = 0;
+      int64_t max_steps = 0;
       int max_steps_n = 0;
       int max_steps_len = 0;
 
