@@ -10,6 +10,7 @@ analysis, and tape visualizations for all machines.
 """
 
 import argparse
+import csv
 import glob
 import json
 import os
@@ -127,8 +128,9 @@ Let $T(n) = \frac{n(n+1)}{2}$ denote the $n$-th triangular number. The language 
 A = \{ a^n b^m \mid n \geq 0 \text{ and } m = T(n) \}
 \]
 Each student built a single-tape Turing machine to decide $A$.
-Machines were scored by average step count across a test suite of 41 cases
-with inputs ranging from $n=0$ to $n=39$.
+Machines were scored by average step count across a test suite of 123 cases:
+41 public cases ($n = 0$ to $39$) and 82 stress-test cases ($n$ up to $3400$,
+exponentially spaced).
 
 \medskip
 \noindent\textbf{Scoring.} A step is one application of the transition function $\delta$.
@@ -675,65 +677,94 @@ def generate_latex(data_list, mapping):
     return "\n".join(parts)
 
 
+def load_csv_results(csv_paths):
+    """Load and combine competition data from one or more CSV files.
+
+    Each CSV has: student,states,transitions,passed,failed,total_steps,max_steps
+    Multiple CSVs are combined per student (passed/failed/total_steps summed,
+    max_steps takes the max, states/transitions from first occurrence).
+    """
+    combined = {}
+    for path in csv_paths:
+        with open(path) as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                name = row["student"]
+                if name not in combined:
+                    combined[name] = {
+                        "student": name,
+                        "states": int(row["states"]),
+                        "transitions": int(row["transitions"]),
+                        "_passed": 0,
+                        "_failed": 0,
+                        "_total_steps": 0,
+                        "_max_steps": 0,
+                        "_total_cases": 0,
+                    }
+                combined[name]["_passed"] += int(row["passed"])
+                combined[name]["_failed"] += int(row["failed"])
+                combined[name]["_total_steps"] += int(row["total_steps"])
+                combined[name]["_max_steps"] = max(
+                    combined[name]["_max_steps"], int(row["max_steps"]))
+                combined[name]["_total_cases"] += (
+                    int(row["passed"]) + int(row["failed"]))
+    return list(combined.values())
+
+
 def main():
     parser = argparse.ArgumentParser(description="Generate HW3A competition report")
     parser.add_argument("--output-dir", default=os.path.join(ROOT, "reports"),
                         help="Output directory for LaTeX files")
+    parser.add_argument("--results-csv", action="append", default=[],
+                        help="CSV file(s) with competition results (can be repeated)")
     parser.add_argument("--trace-max-len", type=int, default=10,
                         help="Max input length for full traces")
     args = parser.parse_args()
 
-    if not os.path.exists(TMC):
-        print(f"Error: {TMC} not found. Run: cmake -B build && cmake --build build",
-              file=sys.stderr)
+    if not args.results_csv:
+        print("Error: No --results-csv files specified", file=sys.stderr)
         sys.exit(1)
 
-    submissions = sorted(glob.glob(os.path.join(SUBMISSIONS_DIR, "*.tm")))
-    if not submissions:
-        print("Error: No submissions found", file=sys.stderr)
-        sys.exit(1)
-
-    print(f"Found {len(submissions)} submissions")
-    print(f"Fixture: {FIXTURE}")
-    print(f"Output: {args.output_dir}")
-    print()
-
-    # Run traces for all submissions
-    data_list = []
-    for tm_path in submissions:
-        name = os.path.splitext(os.path.basename(tm_path))[0]
-        print(f"  Tracing {name}...", end=" ", flush=True)
-        d = run_trace(tm_path, FIXTURE, args.trace_max_len)
-        if d is None:
-            print("FAILED")
-            continue
-
-        # Compute aggregate stats from results
-        results = d.get("results", [])
-        passed = sum(1 for r in results if r["accepted"] == r["expected"] and not r.get("hit_limit", False))
-        failed = len(results) - passed
-        total_steps = sum(r["steps"] for r in results)
-        max_steps = max((r["steps"] for r in results), default=0)
-
-        d["_passed"] = passed
-        d["_failed"] = failed
-        d["_total_steps"] = total_steps
-        d["_max_steps"] = max_steps
-        d["_total_cases"] = len(results)
-
-        data_list.append(d)
-        avg = total_steps / len(results) if results else 0
-        print(f"OK ({passed}/{len(results)} passed, avg {int(avg)} steps)")
+    # Load competition data from CSVs
+    print("Loading competition data from CSV:")
+    for path in args.results_csv:
+        print(f"  {path}")
+    data_list = load_csv_results(args.results_csv)
+    print(f"  {len(data_list)} students loaded\n")
 
     if not data_list:
-        print("Error: No valid data collected", file=sys.stderr)
+        print("Error: No data in CSV files", file=sys.stderr)
         sys.exit(1)
+
+    # Run traces for visualizations on small public inputs
+    if os.path.exists(TMC):
+        submissions = sorted(glob.glob(os.path.join(SUBMISSIONS_DIR, "*.tm")))
+        student_map = {os.path.splitext(os.path.basename(p))[0]: p
+                       for p in submissions}
+
+        print("Running traces for visualizations...")
+        for d in data_list:
+            name = d["student"]
+            tm_path = student_map.get(name)
+            if not tm_path:
+                continue
+            print(f"  Tracing {name}...", end=" ", flush=True)
+            trace_data = run_trace(tm_path, FIXTURE, args.trace_max_len)
+            if trace_data:
+                d["traces"] = trace_data.get("traces", [])
+                d["results"] = trace_data.get("results", [])
+                print("OK")
+            else:
+                print("FAILED")
+        print()
+    else:
+        print(f"WARNING: {TMC} not found, skipping trace visualizations\n")
 
     # Create mapping
     mapping = create_mapping(data_list)
 
     # Generate LaTeX
-    print(f"\nGenerating LaTeX...")
+    print("Generating LaTeX...")
     latex = generate_latex(data_list, mapping)
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -749,8 +780,6 @@ def main():
         for student, machine_id in sorted(mapping.items(), key=lambda x: x[1]):
             f.write(f"Machine {machine_id} = {student}\n")
     print(f"Wrote {mapping_path}")
-
-    print(f"\nTo compile: cd {args.output_dir} && pdflatex hw3a_report.tex")
 
 
 if __name__ == "__main__":

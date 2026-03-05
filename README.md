@@ -146,3 +146,37 @@ Tests use oracle-based exhaustive verification: generate all strings up to a giv
 ```bash
 ./build/tmc_tests
 ```
+
+## HW3A Competition Report
+
+Benchmarks student TM submissions against the triangular number test suites and generates a competition report (leaderboard, comparative analysis, space-time diagrams).
+
+```bash
+python3 scripts/run_benchmarks.py
+```
+
+All students run in parallel. Default 5-minute timeout per student, 100M step limit per case. Output goes to a timestamped folder under `results/`:
+
+```
+results/YYYY-MM-DD_HHMMSS/
+    public.csv          41 public test cases
+    large.csv           82 stress-test cases (n up to 3400)
+    hw3a_report.tex     Generated LaTeX source
+    hw3a_report.pdf     Compiled report
+    mapping.txt         De-identification key
+```
+
+Custom timeout and step limit:
+
+```bash
+python3 scripts/run_benchmarks.py --timeout 600 --step-limit 500000000
+```
+
+Regenerate the report from existing CSVs (no benchmarking):
+
+```bash
+python3 scripts/gen_report.py \
+    --results-csv results/<timestamp>/public.csv \
+    --results-csv results/<timestamp>/large.csv \
+    --output-dir results/<timestamp>
+```

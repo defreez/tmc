@@ -66,6 +66,7 @@ After compilation: `Optimize()` (optional) -> `ToYAML()` or `Simulator::Run()`
 - Variables stored as repeated `1` symbols (value 3 = `111`)
 - Markers use uppercase letters to track processed symbols
 
+
 ## DSL Syntax
 
 **High-level** (parsed by `ParseHL`):
