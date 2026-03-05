@@ -5,7 +5,10 @@ Reads CSVs and trace JSON files produced by run_benchmarks.py.
 Does not run tmc — only processes previously saved data.
 
 Usage:
+    # Default: auto-discover most recent results/<timestamp>/ directory
+    python3 scripts/gen_report.py
 
+    # Explicit: specify CSV files and output directory
     python3 scripts/gen_report.py \\
         --results-csv results/<timestamp>/public.csv \\
         --results-csv results/<timestamp>/large.csv \\
@@ -20,9 +23,110 @@ import csv
 import glob
 import json
 import os
+import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# One-paragraph algorithm summaries for each submission, keyed by student name.
+# These are inserted on each machine's detail page in the report.
+MACHINE_SUMMARIES = {
+    "adan-blanco": (
+        "Uses a right-shift initialization that copies the input past a "
+        "\\texttt{>} marker. In each round $k$, marks one \\texttt{a} as "
+        "\\texttt{X}, then performs an inner loop: for every \\texttt{X} on "
+        "tape, temporarily marks it as \\texttt{A} and sweeps right to cross "
+        "off one \\texttt{b} as \\texttt{Y}. This consumes exactly $k$ "
+        "\\texttt{b}'s in round $k$, verifying the triangular sum "
+        "$1+2+\\cdots+n$."
+    ),
+    "alec-clark": (
+        "Places a \\texttt{\\$} marker at the left end and shifts the input "
+        "rightward. Maintains a growing counter region of \\texttt{c}/\\texttt{d} "
+        "symbols at the right end of the tape. Each round marks one "
+        "\\texttt{a} as \\texttt{X} and appends one new \\texttt{c} to the "
+        "counter, then sweeps back to match every counter tick against one "
+        "\\texttt{b}. The counter grows by one each round, so total "
+        "\\texttt{b}'s consumed equals $1+2+\\cdots+n$."
+    ),
+    "brayden-stach": (
+        "Nearly identical algorithm to Machine~C (counter-tick approach). "
+        "Shifts input past a \\texttt{\\$} marker, then in each round marks "
+        "one \\texttt{a} as \\texttt{X}, appends a counter symbol, and matches "
+        "each counter tick with one \\texttt{b}. Well-commented implementation "
+        "with the same step counts as Machine~C on all test cases."
+    ),
+    "brent-monning": (
+        "Attempts a two-phase approach: Phase~1 marks \\texttt{a}'s as "
+        "\\texttt{c} while restructuring the tape layout, then Phase~2 uses "
+        "\\texttt{x}/\\texttt{y} counter symbols to verify the triangular "
+        "count. However, this machine fails all 41 public test cases, "
+        "suggesting a bug in the transition logic."
+    ),
+    "cory-short": (
+        "Precomputed lookup table. For $n \\leq 100$, encodes the answer "
+        "directly in states named \\texttt{a$\\langle n\\rangle$b$\\langle m\\rangle$} "
+        "that count the exact number of \\texttt{a}'s and \\texttt{b}'s seen "
+        "--- producing 171K states. For $n > 100$, falls back to an "
+        "algorithmic branch (states \\texttt{s}, \\texttt{q1-*}, \\texttt{q2-*}) "
+        "that uses base-9 unary counting to verify the triangular sum."
+    ),
+    "elliott-glenn": (
+        "The most compact hand-written machine at 11~states. Uses a ping-pong "
+        "crossing-off strategy: in round $k$, marks the $k$-th remaining "
+        "\\texttt{a} as \\texttt{X}, then sweeps right and crosses off one "
+        "\\texttt{b} for each \\texttt{X} on tape. Since the number of "
+        "\\texttt{X}'s grows by one each round, this consumes $1+2+\\cdots+n$ "
+        "\\texttt{b}'s total."
+    ),
+    "ezra-fader": (
+        "A base-10 digit-counting machine. Uses 36 states with names like "
+        "\\texttt{1a\\_counted} through \\texttt{9a\\_counted} to track the "
+        "current \\texttt{a}-count modulo~9 within the state itself. For each "
+        "counted \\texttt{a}, crosses off a batch of \\texttt{b}'s whose size "
+        "corresponds to the current digit value. This approach yields fewer "
+        "total steps than the simpler sweep-based machines."
+    ),
+    "julian-loutzenhiser": (
+        "Shifts input past a \\texttt{\\$} left marker. Each round $k$ marks "
+        "one \\texttt{a} as \\texttt{x}, then enters a nested loop that sweeps "
+        "right to find an uncrossed \\texttt{b}, crosses it off, and returns "
+        "to a reset state --- repeating $k$ times by re-scanning the \\texttt{x} "
+        "markers. Accepts when all \\texttt{a}'s and \\texttt{b}'s are consumed."
+    ),
+    "kai-fagundes": (
+        "Massive precomputed lookup table with 1.6M~states using base-62 "
+        "encoded state names (\\texttt{c1}\\ldots\\texttt{cZ}, \\texttt{c10}\\ldots). "
+        "Reads the input character by character, transitioning through states "
+        "that track the exact count of \\texttt{a}'s and \\texttt{b}'s seen so "
+        "far. Accepts or rejects based purely on the final state reached. "
+        "Very fast in steps (max 1,681) but enormous in machine size."
+    ),
+    "minji-kang": (
+        "Uses a \\texttt{|} separator to create a scratch region on the right "
+        "side of the tape. Each round marks one \\texttt{a} and appends a "
+        "\\texttt{1} tick mark to the scratch region. Then matches each tick "
+        "against one \\texttt{b}, marking matched ticks as \\texttt{T}. "
+        "Passes 22 of 41 public test cases; failures may stem from incorrect "
+        "handling of certain input lengths."
+    ),
+    "sebastian-porto": (
+        "Employs an extensive set of tape markers "
+        "(\\texttt{S}, \\texttt{V}, \\texttt{Q}, \\texttt{P}, \\texttt{X}, "
+        "\\texttt{Y}, \\texttt{Z}) and uses wildcard \\texttt{?} transitions "
+        "to handle multiple symbols with shared logic. The algorithm shifts "
+        "and marks symbols in phases to verify the triangular relationship. "
+        "Passes 40 of 41 public test cases."
+    ),
+    "tristan-skerritt": (
+        "Uses an \\texttt{h} marker to track the current head position in the "
+        "\\texttt{a}-region and multiple crossing-off markers "
+        "(\\texttt{p}, \\texttt{q}, \\texttt{r}, \\texttt{u}). Each round "
+        "advances the \\texttt{h} marker one position and crosses off one "
+        "additional \\texttt{b} compared to the previous round, with "
+        "conversion states that transform markers between rounds."
+    ),
+}
 
 
 def create_mapping(data_list):
@@ -169,17 +273,36 @@ itself---only the transitions that follow it.
 
 \subsection{Scoring}
 
-Machines were scored by average step count across a test suite of 123 cases:
+Machines were evaluated on a combined test suite of 123 cases:
 41 public cases ($n = 0$ to $39$, testing both accept and reject inputs)
 and 82 stress-test cases ($n$ up to $3{,}400$, exponentially spaced).
+Each test has a per-case step limit of $86 \times 10^9$ steps.
 
 \medskip
-\noindent Given a test suite $S = \{w_1, \ldots, w_k\}$, the score is:
+\noindent A test case is \textbf{completed} if the machine halts (reaches
+$q_{\mathrm{accept}}$ or $q_{\mathrm{reject}}$) within the step limit.
+A test case that exceeds the step limit is \textbf{timed out}; the machine
+is not credited with completing it, and all subsequent cases in that fixture
+are also marked as timed out.
+
+\medskip
+\noindent Machines are ranked by:
+\begin{enumerate}
+  \item \textbf{Tests completed} (descending): the total number of test cases
+        on which the machine halted within the step limit.
+  \item \textbf{Average steps on completed tests} (ascending, tie-breaker):
+        among the completed tests, the machine with fewer average steps ranks
+        higher.
+\end{enumerate}
+Formally, let $C(M) \subseteq S$ be the set of test cases completed by
+machine $M$. The ranking key is:
 \[
-\mathrm{score}(M) = \frac{1}{k}\sum_{i=1}^{k} \mathrm{steps}(M, w_i)
+\bigl(-|C(M)|,\;\; \mathrm{avg\text{-}steps}(M)\bigr)
+\quad\text{where}\quad
+\mathrm{avg\text{-}steps}(M) = \frac{1}{|C(M)|}\sum_{w \in C(M)} \mathrm{steps}(M, w)
 \]
-The lowest score wins. Machines that exceed $86 \times 10^9$ steps on any
-single test case are marked as failed for that case and all subsequent cases.
+Machines are grouped into \textbf{tiers} by $|C(M)|$. Within each tier,
+machines are sorted by average steps on completed tests.
 
 """
 
@@ -245,12 +368,14 @@ Each submission was run against both fixtures using the following protocol:
       \item Run the simulator with a per-case step limit of
             $86 \times 10^9$ steps.
       \item Record the step count and whether the machine accepted or rejected.
-      \item If the machine exceeds the step limit or the per-case wall-clock
-            timeout, mark the current case and \emph{all subsequent cases}
-            as failed with 0 steps recorded.
+      \item If the machine halts within the step limit, the test is marked
+            \textbf{completed} and its step count is recorded.
+      \item If the machine exceeds the step limit, the test and \emph{all
+            subsequent cases} are marked as \textbf{timed out}. Timed-out
+            cases do not contribute to the completed step count.
     \end{enumerate}
-  \item Report total steps, passed/failed counts, and maximum single-case
-        step count.
+  \item Report per-student totals: completed count, timed-out count,
+        passed (correct) count, and step counts for completed tests only.
 \end{enumerate}
 
 All 12 submissions were benchmarked in parallel (one thread per submission)
@@ -266,64 +391,76 @@ report.
 
 
 def leaderboard(data_list, mapping):
-    """Generate the leaderboard table."""
-    # Sort: passing machines first (by total steps), then failing (by passed desc)
-    passing = [d for d in data_list if d["_failed"] == 0]
-    failing = [d for d in data_list if d["_failed"] > 0]
-    passing.sort(key=lambda d: d["_total_steps"])
-    failing.sort(key=lambda d: -d["_passed"])
+    """Generate the leaderboard table.
 
-    ranked = passing + failing
+    Machines are ranked by:
+      1. Number of tests completed (halted within step limit), descending
+      2. Average steps on completed tests, ascending (tie-breaker)
+    """
+    total_cases = data_list[0]["_total_cases"] if data_list else 0
+
+    def sort_key(d):
+        avg = d["_completed_steps"] / d["_completed"] if d["_completed"] > 0 else float("inf")
+        return (-d["_completed"], avg)
+
+    ranked = sorted(data_list, key=sort_key)
 
     lines = [r"\section{Leaderboard}", ""]
     lines.append(r"\begin{table}[H]")
     lines.append(r"\centering")
+    lines.append(r"\small")
     lines.append(r"\begin{tabular}{r l r r r r r}")
     lines.append(r"\toprule")
-    lines.append(r"Rank & Machine & States & Transitions & Passed & Score (avg steps) & Max Steps \\")
+    lines.append(f"Rank & Machine & States & Transitions & "
+                 f"Completed & Avg Steps & Correct \\\\")
     lines.append(r"\midrule")
 
+    prev_completed = None
     for i, d in enumerate(ranked):
         machine_id = f"Machine {mapping[d['student']]}"
-        rank = i + 1
+        completed = d["_completed"]
+        avg = d["_completed_steps"] / completed if completed > 0 else 0
         passed_str = f"{d['_passed']}/{d['_total_cases']}"
-        avg_steps = d["_total_steps"] / d["_total_cases"] if d["_total_cases"] > 0 else 0
+
+        # Add separator between completion tiers
+        if prev_completed is not None and completed != prev_completed:
+            lines.append(r"\midrule")
+        prev_completed = completed
 
         row_prefix = ""
-        row_suffix = ""
-        if i == 0 and d["_failed"] == 0:
+        if i == 0:
             row_prefix = r"\rowcolor{winnerrow}"
-        elif d["_failed"] > 0:
+        elif d["_passed"] < d["_total_cases"]:
             row_prefix = r"\rowcolor{failrow}"
-
-        rank_str = str(rank) if d["_failed"] == 0 else "---"
 
         lines.append(
             f"{row_prefix}"
-            f"{rank_str} & {machine_id} & "
+            f"{i + 1} & {machine_id} & "
             f"{format_number(d['states'])} & {format_number(d['transitions'])} & "
-            f"{passed_str} & "
-            f"{format_number(int(avg_steps))} & "
-            f"{format_number(d['_max_steps'])} \\\\"
+            f"{completed}/{total_cases} & "
+            f"{format_number(int(avg))} & "
+            f"{passed_str} \\\\"
         )
 
     lines.append(r"\bottomrule")
     lines.append(r"\end{tabular}")
-    lines.append(r"\caption{All submissions ranked by average step count. "
+    lines.append(r"\caption{All submissions ranked by tests completed within "
+                 r"the step limit, with average steps on completed tests as "
+                 r"tie-breaker. "
                  r"\colorbox{winnerrow}{Green} = winner. "
                  r"\colorbox{failrow}{Orange} = did not pass all test cases.}")
     lines.append(r"\end{table}")
     lines.append("")
 
     # Winner announcement
-    if passing:
-        winner = passing[0]
-        winner_id = f"Machine {mapping[winner['student']]}"
-        avg = winner["_total_steps"] / winner["_total_cases"] if winner["_total_cases"] > 0 else 0
-        lines.append(f"\\noindent\\textbf{{Winner: {winner_id}}} with an average of "
-                     f"{format_number(int(avg))} steps per test case "
-                     f"using {format_number(winner['states'])} states and "
-                     f"{format_number(winner['transitions'])} transitions.")
+    winner = ranked[0]
+    winner_id = f"Machine {mapping[winner['student']]}"
+    avg = winner["_completed_steps"] / winner["_completed"] if winner["_completed"] > 0 else 0
+    lines.append(f"\\noindent\\textbf{{Winner: {winner_id}}} completing all "
+                 f"{total_cases} tests with an average of "
+                 f"{format_number(int(avg))} steps per completed test "
+                 f"using {format_number(winner['states'])} states and "
+                 f"{format_number(winner['transitions'])} transitions.")
     lines.append("")
 
     return "\n".join(lines)
@@ -331,8 +468,10 @@ def leaderboard(data_list, mapping):
 
 def comparative_analysis(data_list, mapping):
     """Generate scatter plot and growth curves."""
-    passing = [d for d in data_list if d["_failed"] == 0]
-    passing.sort(key=lambda d: d["_total_steps"])
+    # "passing" = completed all tests within step limit
+    total_cases = data_list[0]["_total_cases"] if data_list else 0
+    passing = [d for d in data_list if d["_completed"] == total_cases]
+    passing.sort(key=lambda d: d["_completed_steps"])
 
     lines = [r"\section{Comparative Analysis}", ""]
 
@@ -359,9 +498,10 @@ def comparative_analysis(data_list, mapping):
 
     lines.append(r"\addplot[scatter, only marks, scatter src=explicit symbolic] coordinates {")
     for d in data_list:
-        cls = "pass" if d["_failed"] == 0 else "fail"
+        cls = "pass" if d["_completed"] == total_cases else "fail"
         mid = mapping[d["student"]]
-        lines.append(f"  ({d['states']}, {d['_total_steps']}) [{cls}] %% {mid}")
+        steps = d["_completed_steps"] if d["_completed"] > 0 else 1
+        lines.append(f"  ({d['states']}, {steps}) [{cls}] %% {mid}")
     lines.append(r"};")
 
     lines.append(r"\end{axis}")
@@ -436,24 +576,26 @@ def comparative_analysis(data_list, mapping):
         lines.append("")
 
     if handwritten:
-        hw_sorted = sorted(handwritten, key=lambda d: d["_total_steps"])
+        hw_sorted = sorted(handwritten, key=lambda d: d["_completed_steps"])
         hw_names = ", ".join(f"Machine {mapping[d['student']]}" for d in hw_sorted)
         best = hw_sorted[0]
         worst = hw_sorted[-1]
+        ratio = worst['_completed_steps'] // best['_completed_steps'] if best['_completed_steps'] > 0 else 0
         lines.append(f"\\textbf{{Hand-written machines}} ({hw_names}) "
                      f"use compact representations (11--36 states) but require "
-                     f"millions of steps on larger inputs. "
+                     f"more steps on larger inputs. "
                      f"Machine {mapping[best['student']]} leads this group "
-                     f"with {format_number(best['_total_steps'])} total steps, "
-                     f"roughly {worst['_total_steps'] // best['_total_steps'] if best['_total_steps'] > 0 else 0}$\\times$ "
+                     f"with {format_number(best['_completed_steps'])} total steps "
+                     f"on completed tests, "
+                     f"roughly {ratio}$\\times$ "
                      f"fewer than Machine {mapping[worst['student']]} "
-                     f"({format_number(worst['_total_steps'])} total steps).")
+                     f"({format_number(worst['_completed_steps'])} total steps).")
         lines.append("")
 
     # Check for identical machines
     step_groups = {}
     for d in passing:
-        key = d["_total_steps"]
+        key = d["_completed_steps"]
         step_groups.setdefault(key, []).append(d)
     for steps, group in step_groups.items():
         if len(group) > 1:
@@ -463,11 +605,21 @@ def comparative_analysis(data_list, mapping):
                          f"suggesting functionally equivalent machines.")
             lines.append("")
 
-    failing = [d for d in data_list if d["_failed"] > 0]
-    if failing:
-        for d in failing:
-            lines.append(f"Machine {mapping[d['student']]} "
-                         f"passed {d['_passed']}/{d['_total_cases']} test cases.")
+    # Machines that did not complete all tests
+    incomplete = [d for d in data_list if d["_completed"] < total_cases]
+    if incomplete:
+        incomplete.sort(key=lambda d: -d["_completed"])
+        lines.append(r"\textbf{Incomplete machines:}")
+        lines.append(r"\begin{itemize}")
+        for d in incomplete:
+            mid = mapping[d["student"]]
+            avg = d["_completed_steps"] / d["_completed"] if d["_completed"] > 0 else 0
+            lines.append(
+                f"\\item Machine {mid}: completed {d['_completed']}/{total_cases} "
+                f"tests ({d['_timed_out']} timed out), "
+                f"{d['_passed']}/{d['_total_cases']} correct, "
+                f"avg {format_number(int(avg))} steps on completed tests")
+        lines.append(r"\end{itemize}")
         lines.append("")
 
     return "\n".join(lines)
@@ -751,16 +903,24 @@ def machine_detail_page(d, mapping, all_data):
     lines.append("")
 
     # Summary table
-    avg_steps = d["_total_steps"] / d["_total_cases"] if d["_total_cases"] > 0 else 0
+    avg_completed = d["_completed_steps"] / d["_completed"] if d["_completed"] > 0 else 0
     lines.append(r"\begin{tabular}{ll}")
     lines.append(f"States & {format_number(d['states'])} \\\\")
     lines.append(f"Transitions & {format_number(d['transitions'])} \\\\")
-    lines.append(f"Test cases passed & {d['_passed']}/{d['_total_cases']} \\\\")
-    lines.append(f"Average steps & {format_number(int(avg_steps))} \\\\")
+    lines.append(f"Tests completed & {d['_completed']}/{d['_total_cases']} \\\\")
+    lines.append(f"Correct & {d['_passed']}/{d['_total_cases']} \\\\")
+    lines.append(f"Avg steps (completed) & {format_number(int(avg_completed))} \\\\")
     lines.append(f"Max steps (single case) & {format_number(d['_max_steps'])} \\\\")
     lines.append(r"\end{tabular}")
     lines.append(r"\medskip")
     lines.append("")
+
+    # Algorithm summary
+    summary = MACHINE_SUMMARIES.get(d["student"])
+    if summary:
+        lines.append(summary)
+        lines.append(r"\medskip")
+        lines.append("")
 
     # Tape visualizations
     if d.get("traces"):
@@ -790,12 +950,12 @@ def generate_latex(data_list, mapping):
                  "Black dots mark the head position.")
     parts.append("")
 
-    # Sort: passing by rank (total steps), then failing
-    passing = sorted([d for d in data_list if d["_failed"] == 0],
-                     key=lambda d: d["_total_steps"])
-    failing = sorted([d for d in data_list if d["_failed"] > 0],
-                     key=lambda d: -d["_passed"])
-    for d in passing + failing:
+    # Sort by leaderboard rank: completed desc, then avg completed steps asc
+    def detail_sort_key(d):
+        avg = d["_completed_steps"] / d["_completed"] if d["_completed"] > 0 else float("inf")
+        return (-d["_completed"], avg)
+
+    for d in sorted(data_list, key=detail_sort_key):
         parts.append(machine_detail_page(d, mapping, data_list))
 
     parts.append(r"\end{document}")
@@ -805,8 +965,9 @@ def generate_latex(data_list, mapping):
 def load_csv_results(csv_paths):
     """Load and combine competition data from one or more CSV files.
 
-    Each CSV has: student,states,transitions,passed,failed,total_steps,max_steps
-    Multiple CSVs are combined per student (passed/failed/total_steps summed,
+    Each CSV has: student,states,transitions,passed,failed,total_steps,max_steps,
+                  completed,timed_out,completed_steps
+    Multiple CSVs are combined per student (fields summed across CSVs,
     max_steps takes the max, states/transitions from first occurrence).
     """
     combined = {}
@@ -825,6 +986,9 @@ def load_csv_results(csv_paths):
                         "_total_steps": 0,
                         "_max_steps": 0,
                         "_total_cases": 0,
+                        "_completed": 0,
+                        "_timed_out": 0,
+                        "_completed_steps": 0,
                     }
                 combined[name]["_passed"] += int(row["passed"])
                 combined[name]["_failed"] += int(row["failed"])
@@ -833,6 +997,10 @@ def load_csv_results(csv_paths):
                     combined[name]["_max_steps"], int(row["max_steps"]))
                 combined[name]["_total_cases"] += (
                     int(row["passed"]) + int(row["failed"]))
+                combined[name]["_completed"] += int(row.get("completed", row["passed"]))
+                combined[name]["_timed_out"] += int(row.get("timed_out", row["failed"]))
+                combined[name]["_completed_steps"] += int(
+                    row.get("completed_steps", row["total_steps"]))
     return list(combined.values())
 
 
@@ -851,17 +1019,47 @@ def load_trace_data(trace_dir):
     return traces
 
 
+def find_latest_results_dir():
+    """Find the most recent results/<timestamp>/ directory."""
+    results_root = os.path.join(ROOT, "results")
+    if not os.path.isdir(results_root):
+        return None
+    # Look for timestamped directories (YYYY-MM-DD_HHMMSS)
+    dirs = sorted(
+        [d for d in os.listdir(results_root)
+         if os.path.isdir(os.path.join(results_root, d)) and len(d) >= 10],
+        reverse=True,
+    )
+    if dirs:
+        return os.path.join(results_root, dirs[0])
+    return None
+
+
 def main():
     parser = argparse.ArgumentParser(description="Generate HW3A competition report from saved results")
-    parser.add_argument("--output-dir", default=os.path.join(ROOT, "reports"),
-                        help="Output directory for LaTeX files (also searched for traces/)")
+    parser.add_argument("--output-dir",
+                        help="Output directory for LaTeX files (default: most recent results/<timestamp>/)")
     parser.add_argument("--results-csv", action="append", default=[],
                         help="CSV file(s) with competition results (can be repeated)")
     args = parser.parse_args()
 
+    # Auto-discover if no CSVs specified
     if not args.results_csv:
-        print("Error: No --results-csv files specified", file=sys.stderr)
-        sys.exit(1)
+        latest = find_latest_results_dir()
+        if not latest:
+            print("Error: No results directories found in results/", file=sys.stderr)
+            print("Run run_benchmarks.py first, or specify --results-csv explicitly.", file=sys.stderr)
+            sys.exit(1)
+        print(f"Using most recent results: {latest}")
+        args.results_csv = sorted(glob.glob(os.path.join(latest, "*.csv")))
+        if not args.results_csv:
+            print(f"Error: No CSV files found in {latest}", file=sys.stderr)
+            sys.exit(1)
+        if not args.output_dir:
+            args.output_dir = latest
+
+    if not args.output_dir:
+        args.output_dir = os.path.join(ROOT, "reports")
 
     # Load competition data from CSVs
     print("Loading competition data from CSV:")
@@ -873,6 +1071,15 @@ def main():
     if not data_list:
         print("Error: No data in CSV files", file=sys.stderr)
         sys.exit(1)
+
+    # Normalize _total_cases: all students face the same tests, so use the max
+    # (handles machines that crashed/timed out before producing a summary)
+    max_cases = max(d["_total_cases"] for d in data_list)
+    for d in data_list:
+        if d["_total_cases"] == 0:
+            d["_total_cases"] = max_cases
+            d["_failed"] = max_cases
+            d["_timed_out"] = max_cases
 
     # Load trace data from <output-dir>/traces/*.json
     trace_dir = os.path.join(args.output_dir, "traces")
@@ -907,6 +1114,29 @@ def main():
         for student, machine_id in sorted(mapping.items(), key=lambda x: x[1]):
             f.write(f"Machine {machine_id} = {student}\n")
     print(f"Wrote {mapping_path}")
+
+    # Compile PDF
+    print("\nCompiling PDF...")
+    result = subprocess.run(
+        ["pdflatex", "-interaction=nonstopmode", "hw3a_report.tex"],
+        cwd=args.output_dir, capture_output=True, text=True,
+    )
+    if result.returncode == 0:
+        # Second pass for references
+        subprocess.run(
+            ["pdflatex", "-interaction=nonstopmode", "hw3a_report.tex"],
+            cwd=args.output_dir, capture_output=True, text=True,
+        )
+        pdf_path = os.path.join(args.output_dir, "hw3a_report.pdf")
+        print(f"Wrote {pdf_path}")
+    else:
+        print("WARNING: pdflatex failed", file=sys.stderr)
+        log_file = os.path.join(args.output_dir, "hw3a_report.log")
+        if os.path.exists(log_file):
+            with open(log_file) as f:
+                lines = f.readlines()
+                for line in lines[-20:]:
+                    print(f"  {line.rstrip()}", file=sys.stderr)
 
 
 if __name__ == "__main__":

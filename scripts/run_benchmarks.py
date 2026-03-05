@@ -57,26 +57,47 @@ def run_one(tm_path, fixture, step_limit, timeout):
         return stdout, stderr, True
 
 
-def parse_summary(stdout):
-    """Parse the === Summary === block from tmc --bench stdout."""
-    result = {}
+def parse_summary(stdout, step_limit):
+    """Parse tmc --bench stdout: per-test lines and summary block.
+
+    Returns a dict with:
+      passed, failed, total_steps, max_steps  (from summary block)
+      completed       - tests that halted within the step limit
+      timed_out       - tests that hit the step limit or were aborted
+      completed_steps - total steps for completed tests only
+    """
+    result = {"completed": 0, "timed_out": 0, "completed_steps": 0}
     in_summary = False
     for line in stdout.strip().split("\n"):
         if "=== Summary ===" in line:
             in_summary = True
             continue
-        if not in_summary:
+        if in_summary:
+            if line.startswith("Passed:"):
+                frac = line.split()[1].split("/")
+                result["passed"] = int(frac[0])
+                result["total_cases"] = int(frac[1])
+            elif line.startswith("Failed:"):
+                result["failed"] = int(line.split()[1])
+            elif line.startswith("Total:"):
+                result["total_steps"] = int(line.split()[1])
+            elif line.startswith("Max:"):
+                result["max_steps"] = int(line.split()[1])
             continue
-        if line.startswith("Passed:"):
-            frac = line.split()[1].split("/")
-            result["passed"] = int(frac[0])
-            result["total_cases"] = int(frac[1])
-        elif line.startswith("Failed:"):
-            result["failed"] = int(line.split()[1])
-        elif line.startswith("Total:"):
-            result["total_steps"] = int(line.split()[1])
-        elif line.startswith("Max:"):
-            result["max_steps"] = int(line.split()[1])
+
+        # Parse per-test lines: "[  1/82] n= 1 ... steps=     12 ..."
+        if line.strip().startswith("[") and "steps=" in line:
+            hit_limit = "HIT_LIMIT" in line or "TIMEOUT" in line
+            # Extract steps value
+            idx = line.index("steps=")
+            after = line[idx + 6:].split()[0]
+            steps = int(after)
+            if hit_limit or steps >= step_limit:
+                result["timed_out"] += 1
+            else:
+                result["completed"] += 1
+                result["completed_steps"] += steps
+
     if "failed" not in result:
         result["failed"] = 0
     return result
@@ -113,7 +134,7 @@ def run_suite(fixture, output_csv, submissions, step_limit, timeout):
         elapsed = time.time() - t0
 
         states, transitions = parse_tm_info(stderr)
-        row = parse_summary(stdout) if stdout.strip() else {}
+        row = parse_summary(stdout, step_limit) if stdout.strip() else {}
 
         info = {
             "student": name,
@@ -123,6 +144,9 @@ def run_suite(fixture, output_csv, submissions, step_limit, timeout):
             "failed": row.get("failed", 0) or (row.get("total_cases", 0) - row.get("passed", 0)),
             "total_steps": row.get("total_steps", 0),
             "max_steps": row.get("max_steps", 0),
+            "completed": row.get("completed", 0),
+            "timed_out": row.get("timed_out", 0),
+            "completed_steps": row.get("completed_steps", 0),
             "elapsed": elapsed,
             "killed": killed,
         }
@@ -150,11 +174,13 @@ def run_suite(fixture, output_csv, submissions, step_limit, timeout):
     with open(output_csv, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["student", "states", "transitions", "passed", "failed",
-                         "total_steps", "max_steps"])
+                         "total_steps", "max_steps", "completed", "timed_out",
+                         "completed_steps"])
         for name in sorted(results):
             r = results[name]
             writer.writerow([r["student"], r["states"], r["transitions"],
-                             r["passed"], r["failed"], r["total_steps"], r["max_steps"]])
+                             r["passed"], r["failed"], r["total_steps"], r["max_steps"],
+                             r["completed"], r["timed_out"], r["completed_steps"]])
 
     print(f"\n  Wrote {output_csv}")
     return results
@@ -238,31 +264,6 @@ def main():
         result = subprocess.run(cmd, cwd=ROOT)
         if result.returncode != 0:
             print("WARNING: Report generation failed", file=sys.stderr)
-
-    # Compile PDF
-    tex_file = os.path.join(run_dir, "hw3a_report.tex")
-    if os.path.exists(tex_file):
-        print(f"\nCompiling PDF...")
-        result = subprocess.run(
-            ["pdflatex", "-interaction=nonstopmode", "hw3a_report.tex"],
-            cwd=run_dir, capture_output=True, text=True,
-        )
-        if result.returncode == 0:
-            # Second pass for references
-            subprocess.run(
-                ["pdflatex", "-interaction=nonstopmode", "hw3a_report.tex"],
-                cwd=run_dir, capture_output=True, text=True,
-            )
-            print(f"  Wrote {os.path.join(run_dir, 'hw3a_report.pdf')}")
-        else:
-            print("WARNING: pdflatex failed", file=sys.stderr)
-            # Show last 20 lines of log for debugging
-            log_file = os.path.join(run_dir, "hw3a_report.log")
-            if os.path.exists(log_file):
-                with open(log_file) as f:
-                    lines = f.readlines()
-                    for line in lines[-20:]:
-                        print(f"  {line.rstrip()}", file=sys.stderr)
 
     total_elapsed = time.time() - total_start
     print(f"\nAll done in {total_elapsed:.1f}s")
