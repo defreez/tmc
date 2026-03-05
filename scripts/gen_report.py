@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
-"""Generate a LaTeX competition report for HW3A TM submissions.
+"""Generate a LaTeX competition report from saved benchmark results.
+
+Reads CSVs and trace JSON files produced by run_benchmarks.py.
+Does not run tmc — only processes previously saved data.
 
 Usage:
-    python scripts/gen_report.py [--output-dir reports/]
 
-Runs build/tmc --trace for each submission, collects JSON data,
-and generates a single LaTeX report with leaderboard, comparative
-analysis, and tape visualizations for all machines.
+    python3 scripts/gen_report.py \\
+        --results-csv results/<timestamp>/public.csv \\
+        --results-csv results/<timestamp>/large.csv \\
+        --output-dir results/<timestamp>
+
+Trace JSON files are loaded automatically from <output-dir>/traces/*.json
+if present (produced by run_benchmarks.py).
 """
 
 import argparse
@@ -14,33 +20,9 @@ import csv
 import glob
 import json
 import os
-import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-TMC = os.path.join(ROOT, "build", "tmc")
-FIXTURE = os.path.join(ROOT, "tests", "fixtures", "hw3a_public.txt")
-SUBMISSIONS_DIR = os.path.join(ROOT, "submissions")
-
-
-def run_trace(tm_path, fixture, trace_max_len=10):
-    """Run tmc --trace on a submission and return parsed JSON."""
-    name = os.path.splitext(os.path.basename(tm_path))[0]
-    try:
-        proc = subprocess.run(
-            [TMC, "--trace", fixture, "--trace-max-len", str(trace_max_len), tm_path],
-            capture_output=True, text=True, timeout=600,
-        )
-        if proc.returncode != 0:
-            print(f"  WARNING: {name} exited with code {proc.returncode}", file=sys.stderr)
-            # Still try to parse - some machines fail tests but produce valid JSON
-        return json.loads(proc.stdout)
-    except subprocess.TimeoutExpired:
-        print(f"  ERROR: {name} timed out", file=sys.stderr)
-        return None
-    except json.JSONDecodeError as e:
-        print(f"  ERROR: {name} invalid JSON: {e}", file=sys.stderr)
-        return None
 
 
 def create_mapping(data_list):
@@ -128,15 +110,157 @@ Let $T(n) = \frac{n(n+1)}{2}$ denote the $n$-th triangular number. The language 
 A = \{ a^n b^m \mid n \geq 0 \text{ and } m = T(n) \}
 \]
 Each student built a single-tape Turing machine to decide $A$.
-Machines were scored by average step count across a test suite of 123 cases:
-41 public cases ($n = 0$ to $39$) and 82 stress-test cases ($n$ up to $3400$,
-exponentially spaced).
+
+\subsection{Step Counting}
+
+All machines use the standard single-tape TM model with a left-bounded tape
+(Sipser convention). A \textbf{step} is one application of the transition
+function:
+\[
+\delta(q, a) = (q', b, D)
+\]
+where $q$ is the current state, $a$ is the symbol under the head, $q'$ is the
+next state, $b$ is the symbol written, and $D \in \{L, R\}$ is the head
+movement direction.
 
 \medskip
-\noindent\textbf{Scoring.} A step is one application of the transition function $\delta$.
-Given a test suite $S = \{w_1, \ldots, w_k\}$, the score is
-$\text{score}(M) = \frac{1}{k}\sum_{i=1}^k \text{steps}(M, w_i)$.
-The lowest score wins.
+\noindent\textbf{Example.} Suppose the machine is in configuration
+$(q_3,\; \texttt{a\,b\,\_},\; 1)$---state $q_3$, tape \texttt{ab\_}, head
+at position~1 (over~\texttt{b}). If $\delta(q_3, \texttt{b}) = (q_5,
+\texttt{X}, R)$, then one step:
+\begin{enumerate}
+  \item Writes \texttt{X} at position 1, producing tape \texttt{aX\_}.
+  \item Moves the head right to position 2.
+  \item Transitions to state $q_5$.
+\end{enumerate}
+The resulting configuration is $(q_5,\; \texttt{a\,X\,\_},\; 2)$.
+This single application of $\delta$ counts as \textbf{one step}.
+
+\medskip
+\noindent\textbf{Formal definition.}
+The \emph{initial configuration} on input $w$ is $(q_0,\; w\sqcup^\omega,\; 0)$:
+start state $q_0$, input $w$ written on the tape with blanks extending to the
+right, head at position~0. The step count $\mathrm{steps}(M, w)$ is the number
+of $\delta$ applications from the initial configuration until $M$ enters
+$q_{\mathrm{accept}}$ or $q_{\mathrm{reject}}$.
+
+\medskip
+\noindent\textbf{Example.} A TM that decides $\{a\}$ (accepts only the
+single-character string \texttt{a}):
+\begin{center}
+\begin{tabular}{llll}
+\toprule
+Input $w$ & Initial config & Computation & Steps \\
+\midrule
+\texttt{a} & $(q_0, \texttt{a\_}, 0)$ &
+  $\delta(q_0, \texttt{a}) \to (q_1, \texttt{a}, R)$,\;
+  $\delta(q_1, \texttt{\_}) \to (q_{\mathrm{acc}}, \texttt{\_}, R)$ & 2 \\
+\texttt{aa} & $(q_0, \texttt{aa\_}, 0)$ &
+  $\delta(q_0, \texttt{a}) \to (q_1, \texttt{a}, R)$,\;
+  $\delta(q_1, \texttt{a}) \to (q_{\mathrm{rej}}, \texttt{a}, R)$ & 2 \\
+$\varepsilon$ & $(q_0, \texttt{\_}, 0)$ &
+  $\delta(q_0, \texttt{\_}) \to (q_{\mathrm{rej}}, \texttt{\_}, R)$ & 1 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent Note that the step count does not include the initial configuration
+itself---only the transitions that follow it.
+
+\subsection{Scoring}
+
+Machines were scored by average step count across a test suite of 123 cases:
+41 public cases ($n = 0$ to $39$, testing both accept and reject inputs)
+and 82 stress-test cases ($n$ up to $3{,}400$, exponentially spaced).
+
+\medskip
+\noindent Given a test suite $S = \{w_1, \ldots, w_k\}$, the score is:
+\[
+\mathrm{score}(M) = \frac{1}{k}\sum_{i=1}^{k} \mathrm{steps}(M, w_i)
+\]
+The lowest score wins. Machines that exceed $86 \times 10^9$ steps on any
+single test case are marked as failed for that case and all subsequent cases.
+
+"""
+
+
+def methodology():
+    return r"""
+\section{Methodology}
+
+\subsection{TM Model}
+
+All submissions implement deterministic, single-tape Turing machines with:
+\begin{itemize}
+  \item A finite state set $Q$ with designated $q_0$, $q_{\mathrm{accept}}$,
+        $q_{\mathrm{reject}}$.
+  \item Input alphabet $\Sigma = \{a, b\}$ and a tape alphabet
+        $\Gamma \supseteq \Sigma \cup \{\sqcup\}$ that may include additional
+        marker symbols.
+  \item A left-bounded tape (Sipser convention): the head cannot move left of
+        position~0. If a transition specifies $L$ while the head is at
+        position~0, the head remains at position~0.
+  \item A transition function
+        $\delta : Q' \times \Gamma \to Q \times \Gamma \times \{L, R\}$
+        where $Q' = Q \setminus \{q_{\mathrm{accept}}, q_{\mathrm{reject}}\}$.
+\end{itemize}
+
+\subsection{Test Suite}
+
+The combined test suite contains 123 inputs divided into two fixtures.
+
+\paragraph{Public suite (41 cases).}
+Inputs with $n = 0$ to $39$ (not every $n$ value), including 13 accept
+cases ($m = T(n)$) and 28 reject cases ($m \neq T(n)$). All reject
+inputs consist of $a^n b^m$ with an incorrect count of $b$'s---no
+interleaving, no extraneous symbols. The suite includes the edge case
+$\varepsilon$ ($n = 0$, accept). The largest input has $|w| = 1{,}508$.
+
+\paragraph{Large suite (82 cases).}
+For each of 41 values of $n$ exponentially spaced from 1 to $3{,}400$, one
+accept input ($a^n b^{T(n)}$) and one reject input
+($a^n b^{T(n) \pm \lfloor n/2 \rfloor}$). The sign of the offset is
+deterministic and fixed. The largest accept input has
+$n = 3{,}400$ and $|w| = 3{,}400 + T(3{,}400) = 5{,}783{,}400$.
+
+\subsection{Simulator}
+
+Machines were simulated using a flat transition table compiled from each
+submission's YAML specification. The transition function is stored as a
+contiguous array indexed by $(\text{state\_id} \times |\Gamma| +
+\text{symbol\_id})$, giving $O(1)$ lookup per step with no hash table
+overhead. The simulator achieves approximately 300 million steps per second
+on a single core (Apple M-series, no parallelism within a simulation).
+
+The tape is represented as a dynamically-resizing byte array with 4{,}096
+cells of initial padding. If the head reaches the end, the tape doubles.
+
+\subsection{Benchmarking Procedure}
+
+Each submission was run against both fixtures using the following protocol:
+\begin{enumerate}
+  \item Load the TM from its YAML file and compile the flat transition table.
+  \item For each test input in order:
+    \begin{enumerate}
+      \item Run the simulator with a per-case step limit of
+            $86 \times 10^9$ steps.
+      \item Record the step count and whether the machine accepted or rejected.
+      \item If the machine exceeds the step limit or the per-case wall-clock
+            timeout, mark the current case and \emph{all subsequent cases}
+            as failed with 0 steps recorded.
+    \end{enumerate}
+  \item Report total steps, passed/failed counts, and maximum single-case
+        step count.
+\end{enumerate}
+
+All 12 submissions were benchmarked in parallel (one thread per submission)
+with a 5-minute wall-clock timeout per submission.
+
+\subsection{De-identification}
+
+Submissions are identified by letter (Machine A through L) based on
+alphabetical ordering of student names. The mapping is not included in this
+report.
 
 """
 
@@ -195,7 +319,7 @@ def leaderboard(data_list, mapping):
     if passing:
         winner = passing[0]
         winner_id = f"Machine {mapping[winner['student']]}"
-        avg = winner["_total_steps"] / winner["_total_cases"]
+        avg = winner["_total_steps"] / winner["_total_cases"] if winner["_total_cases"] > 0 else 0
         lines.append(f"\\noindent\\textbf{{Winner: {winner_id}}} with an average of "
                      f"{format_number(int(avg))} steps per test case "
                      f"using {format_number(winner['states'])} states and "
@@ -321,7 +445,7 @@ def comparative_analysis(data_list, mapping):
                      f"millions of steps on larger inputs. "
                      f"Machine {mapping[best['student']]} leads this group "
                      f"with {format_number(best['_total_steps'])} total steps, "
-                     f"roughly {worst['_total_steps'] // best['_total_steps']}$\\times$ "
+                     f"roughly {worst['_total_steps'] // best['_total_steps'] if best['_total_steps'] > 0 else 0}$\\times$ "
                      f"fewer than Machine {mapping[worst['student']]} "
                      f"({format_number(worst['_total_steps'])} total steps).")
         lines.append("")
@@ -654,6 +778,7 @@ def generate_latex(data_list, mapping):
     parts = []
     parts.append(preamble())
     parts.append(introduction())
+    parts.append(methodology())
     parts.append(leaderboard(data_list, mapping))
     parts.append(comparative_analysis(data_list, mapping))
 
@@ -711,14 +836,27 @@ def load_csv_results(csv_paths):
     return list(combined.values())
 
 
+def load_trace_data(trace_dir):
+    """Load trace JSON files from a directory. Returns {student_name: trace_dict}."""
+    traces = {}
+    if not os.path.isdir(trace_dir):
+        return traces
+    for path in sorted(glob.glob(os.path.join(trace_dir, "*.json"))):
+        name = os.path.splitext(os.path.basename(path))[0]
+        try:
+            with open(path) as f:
+                traces[name] = json.load(f)
+        except (json.JSONDecodeError, OSError) as e:
+            print(f"  WARNING: Could not load {path}: {e}", file=sys.stderr)
+    return traces
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Generate HW3A competition report")
+    parser = argparse.ArgumentParser(description="Generate HW3A competition report from saved results")
     parser.add_argument("--output-dir", default=os.path.join(ROOT, "reports"),
-                        help="Output directory for LaTeX files")
+                        help="Output directory for LaTeX files (also searched for traces/)")
     parser.add_argument("--results-csv", action="append", default=[],
                         help="CSV file(s) with competition results (can be repeated)")
-    parser.add_argument("--trace-max-len", type=int, default=10,
-                        help="Max input length for full traces")
     args = parser.parse_args()
 
     if not args.results_csv:
@@ -736,29 +874,18 @@ def main():
         print("Error: No data in CSV files", file=sys.stderr)
         sys.exit(1)
 
-    # Run traces for visualizations on small public inputs
-    if os.path.exists(TMC):
-        submissions = sorted(glob.glob(os.path.join(SUBMISSIONS_DIR, "*.tm")))
-        student_map = {os.path.splitext(os.path.basename(p))[0]: p
-                       for p in submissions}
-
-        print("Running traces for visualizations...")
+    # Load trace data from <output-dir>/traces/*.json
+    trace_dir = os.path.join(args.output_dir, "traces")
+    trace_data = load_trace_data(trace_dir)
+    if trace_data:
+        print(f"Loaded traces for {len(trace_data)} students from {trace_dir}\n")
         for d in data_list:
             name = d["student"]
-            tm_path = student_map.get(name)
-            if not tm_path:
-                continue
-            print(f"  Tracing {name}...", end=" ", flush=True)
-            trace_data = run_trace(tm_path, FIXTURE, args.trace_max_len)
-            if trace_data:
-                d["traces"] = trace_data.get("traces", [])
-                d["results"] = trace_data.get("results", [])
-                print("OK")
-            else:
-                print("FAILED")
-        print()
+            if name in trace_data:
+                d["traces"] = trace_data[name].get("traces", [])
+                d["results"] = trace_data[name].get("results", [])
     else:
-        print(f"WARNING: {TMC} not found, skipping trace visualizations\n")
+        print(f"No trace data found in {trace_dir} (run run_benchmarks.py to generate)\n")
 
     # Create mapping
     mapping = create_mapping(data_list)

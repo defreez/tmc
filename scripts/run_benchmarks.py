@@ -5,18 +5,17 @@ All students run in parallel per fixture. Results, LaTeX, and PDF are
 grouped in a timestamped folder under results/.
 
 Usage:
-    # Full run: both fixtures, generate report
     python3 scripts/run_benchmarks.py
-
-    # Custom timeout and step limit
-    python3 scripts/run_benchmarks.py --timeout 600 --step-limit 500000000
+    python3 scripts/run_benchmarks.py --timeout 600
 
 Output:
     results/YYYY-MM-DD_HHMMSS/
         public.csv
         large.csv
+        traces/
         hw3a_report.tex
         hw3a_report.pdf   (if pdflatex available)
+        mapping.txt
 """
 
 import argparse
@@ -53,7 +52,9 @@ def run_one(tm_path, fixture, step_limit, timeout):
         )
         return proc.stdout, proc.stderr, False
     except subprocess.TimeoutExpired as e:
-        return (e.stdout or ""), (e.stderr or ""), True
+        stdout = e.stdout.decode() if isinstance(e.stdout, bytes) else (e.stdout or "")
+        stderr = e.stderr.decode() if isinstance(e.stderr, bytes) else (e.stderr or "")
+        return stdout, stderr, True
 
 
 def parse_summary(stdout):
@@ -159,10 +160,11 @@ def run_suite(fixture, output_csv, submissions, step_limit, timeout):
     return results
 
 
+STEP_LIMIT = 86_000_000_000
+
+
 def main():
     parser = argparse.ArgumentParser(description="Run TM benchmarks and generate report")
-    parser.add_argument("--step-limit", type=int, default=86_000_000_000,
-                        help="Max steps per test case (default: 86B)")
     parser.add_argument("--timeout", type=float, default=300.0,
                         help="Wall clock timeout per student in seconds (default: 300 = 5 min)")
     args = parser.parse_args()
@@ -194,10 +196,36 @@ def main():
             print(f"\nWARNING: Fixture not found, skipping: {fixture_rel}")
             continue
         output_csv = os.path.join(run_dir, csv_name)
-        run_suite(fixture, output_csv, submissions, args.step_limit, args.timeout)
+        run_suite(fixture, output_csv, submissions, STEP_LIMIT, args.timeout)
 
     bench_elapsed = time.time() - total_start
     print(f"\nBenchmarks done in {bench_elapsed:.1f}s")
+
+    # Run traces for space-time diagrams
+    trace_dir = os.path.join(run_dir, "traces")
+    os.makedirs(trace_dir, exist_ok=True)
+    fixture = os.path.join(ROOT, SUITES[0][0])  # public fixture for traces
+    print(f"\nRunning traces (public fixture, max input len 10)...")
+    for tm_path in submissions:
+        name = student_name(tm_path)
+        print(f"  {name}...", end=" ", flush=True)
+        try:
+            proc = subprocess.run(
+                [TMC, "--trace", fixture, "--trace-max-len", "10", tm_path],
+                capture_output=True, text=True, timeout=600,
+            )
+            if proc.stdout.strip():
+                trace_path = os.path.join(trace_dir, f"{name}.json")
+                with open(trace_path, "w") as f:
+                    f.write(proc.stdout)
+                print("OK")
+            else:
+                print("no output")
+        except subprocess.TimeoutExpired:
+            print("TIMEOUT")
+        except Exception as e:
+            print(f"ERROR: {e}")
+    print(f"  Wrote traces to {trace_dir}")
 
     # Generate report
     gen_report = os.path.join(ROOT, "scripts", "gen_report.py")

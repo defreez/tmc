@@ -149,30 +149,30 @@ Tests use oracle-based exhaustive verification: generate all strings up to a giv
 
 ## HW3A Competition Report
 
-Benchmarks student TM submissions against the triangular number test suites and generates a competition report (leaderboard, comparative analysis, space-time diagrams).
+Two scripts with separate responsibilities:
+
+- `run_benchmarks.py` — runs `tmc`, produces all data (CSVs + trace JSONs), generates report + PDF
+- `gen_report.py` — regenerates the report from saved data, never runs `tmc`
+
+### Full run (benchmarks + traces + report)
 
 ```bash
 python3 scripts/run_benchmarks.py
 ```
 
-All students run in parallel. Default 5-minute timeout per student, 100M step limit per case. Output goes to a timestamped folder under `results/`:
+Runs all students in parallel with a 5-minute timeout and 86B step limit per case. Output:
 
 ```
 results/YYYY-MM-DD_HHMMSS/
     public.csv          41 public test cases
     large.csv           82 stress-test cases (n up to 3400)
+    traces/             Per-student trace JSON files
     hw3a_report.tex     Generated LaTeX source
     hw3a_report.pdf     Compiled report
     mapping.txt         De-identification key
 ```
 
-Custom timeout and step limit:
-
-```bash
-python3 scripts/run_benchmarks.py --timeout 600 --step-limit 500000000
-```
-
-Regenerate the report from existing CSVs (no benchmarking):
+### Regenerate report from saved results (no benchmarking)
 
 ```bash
 python3 scripts/gen_report.py \
@@ -180,3 +180,5 @@ python3 scripts/gen_report.py \
     --results-csv results/<timestamp>/large.csv \
     --output-dir results/<timestamp>
 ```
+
+Trace JSONs are loaded automatically from `<output-dir>/traces/` if present.
