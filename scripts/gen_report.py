@@ -196,7 +196,7 @@ def preamble():
 \definecolor{sym-head}{HTML}{111827}
 
 \title{\textbf{Theory of Computation: HW3A}\\[0.3em]
-       \Large Competition Results}
+       \Large 12 Turing Machines, 1.6 Trillion Steps}
 \author{CS 418, Winter 2026}
 \date{March 5, 2026}
 
@@ -223,7 +223,9 @@ a radically different approach: precomputing a lookup table of up to
 1.6 million states that resolves small inputs in a single left-to-right
 pass.  The large test suite was specifically designed to find the
 boundary where these tables run out. The results reveal a
-three-phase crossover that neither strategy dominates everywhere.
+three-phase crossover that neither strategy dominates everywhere,
+and the overall winner turns out to be the machine whose fallback
+algorithm scaled best on the largest inputs.
 
 \section{Problem}
 
@@ -291,7 +293,11 @@ $\varepsilon$ & $(q_0, \texttt{\_}, 0)$ &
 \end{center}
 
 \noindent Note that the step count does not include the initial configuration
-itself; only the transitions that follow it.
+itself; only the transitions that follow it. The initial configuration is
+step~0, and each application of $\delta$ increments the count by one.
+This is one fewer than the convention used in lecture, which numbers the
+initial configuration as step~1. To convert: $\mathrm{steps_{lecture}} =
+\mathrm{steps_{report}} + 1$.
 
 \subsection{Scoring}
 
