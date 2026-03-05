@@ -1,6 +1,9 @@
 #include <gtest/gtest.h>
 #include "tmc/ir.hpp"
+#include "tmc/codegen.hpp"
 #include "tmc/simulator.hpp"
+#include <fstream>
+#include <sstream>
 
 namespace tmc {
 namespace {
@@ -131,6 +134,76 @@ TEST(SimulatorTest, StepByStep) {
   EXPECT_TRUE(sim.Halted());
   EXPECT_TRUE(sim.Accepted());
   EXPECT_EQ(sim.Steps(), 1);
+}
+
+// Exact step count verification for AnBn TM.
+// Manually traced:
+//   "ab":   q0→q1→q2→q0→q3→qA = 5 transitions
+//   "aabb": 13 transitions (traced by hand)
+TEST(SimulatorTest, ExactStepCounts) {
+  TM tm = MakeAnBn();
+  Simulator sim(tm);
+
+  EXPECT_EQ(sim.Run("ab").steps, 5);
+  EXPECT_EQ(sim.Run("aabb").steps, 13);
+  EXPECT_EQ(sim.Run("").steps, 1);    // q0 reads blank → qA
+  EXPECT_EQ(sim.Run("a").steps, 2);   // q0→q1, q1 reads blank → qR
+  EXPECT_EQ(sim.Run("b").steps, 1);   // q0 reads 'b' → qR
+}
+
+// Cross-check: Run() step count must equal Step()-by-step count.
+// This is the critical invariant for competition scoring.
+TEST(SimulatorTest, RunVsStepCrossCheck) {
+  TM tm = MakeAnBn();
+  Simulator sim(tm);
+
+  std::vector<std::string> inputs = {"", "a", "b", "ab", "ba", "aabb",
+                                      "aaabbb", "aab", "abb", "aaaa"};
+  for (const auto& input : inputs) {
+    auto run_result = sim.Run(input);
+
+    sim.Reset(input);
+    while (sim.Step()) {}
+
+    EXPECT_EQ(run_result.steps, sim.Steps())
+        << "Step count mismatch for input \"" << input << "\": "
+        << "Run()=" << run_result.steps << " Step()=" << sim.Steps();
+    EXPECT_EQ(run_result.accepted, sim.Accepted())
+        << "Accept/reject mismatch for input \"" << input << "\"";
+  }
+}
+
+// Cross-check Run() vs Step() on a real YAML TM from examples.
+TEST(SimulatorTest, RunVsStepOnYAML) {
+  std::ifstream ifs(std::string(EXAMPLES_DIR) + "/triangular.tm");
+  ASSERT_TRUE(ifs.good()) << "Cannot open triangular.tm";
+  std::stringstream buf;
+  buf << ifs.rdbuf();
+  TM tm = FromYAML(buf.str());
+
+  Simulator sim(tm, 10000000);
+
+  // Test a range of inputs
+  std::vector<std::string> inputs = {
+      "",           // empty
+      "ab",         // n=1, T(1)=1 → accept
+      "a",          // n=1, 0 b's → reject
+      "aabbb",      // n=2, T(2)=3 → accept
+      "aabb",       // n=2, 2 b's ≠ 3 → reject
+  };
+
+  for (const auto& input : inputs) {
+    auto run_result = sim.Run(input);
+
+    sim.Reset(input);
+    while (sim.Step()) {}
+
+    EXPECT_EQ(run_result.steps, sim.Steps())
+        << "YAML TM step mismatch for \"" << input << "\": "
+        << "Run()=" << run_result.steps << " Step()=" << sim.Steps();
+    EXPECT_EQ(run_result.accepted, sim.Accepted())
+        << "YAML TM accept mismatch for \"" << input << "\"";
+  }
 }
 
 }  // namespace
