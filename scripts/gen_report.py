@@ -67,7 +67,7 @@ MACHINE_SUMMARIES = {
         "Precomputed lookup table. For $n \\leq 100$, encodes the answer "
         "directly in states named \\texttt{a$\\langle n\\rangle$b$\\langle m\\rangle$} "
         "that count the exact number of \\texttt{a}'s and \\texttt{b}'s seen "
-        "--- producing 171K states. For $n > 100$, falls back to an "
+        ", producing 171K states. For $n > 100$, falls back to an "
         "algorithmic branch (states \\texttt{s}, \\texttt{q1-*}, \\texttt{q2-*}) "
         "that uses base-9 unary counting to verify the triangular sum."
     ),
@@ -91,7 +91,7 @@ MACHINE_SUMMARIES = {
         "Shifts input past a \\texttt{\\$} left marker. Each round $k$ marks "
         "one \\texttt{a} as \\texttt{x}, then enters a nested loop that sweeps "
         "right to find an uncrossed \\texttt{b}, crosses it off, and returns "
-        "to a reset state --- repeating $k$ times by re-scanning the \\texttt{x} "
+        "to a reset state, repeating $k$ times by re-scanning the \\texttt{x} "
         "markers. Accepts when all \\texttt{a}'s and \\texttt{b}'s are consumed."
     ),
     "kai-fagundes": (
@@ -197,7 +197,7 @@ def preamble():
 
 \title{\textbf{Theory of Computation: HW3A}\\[0.3em]
        \Large Competition Results}
-\author{CS 418 --- Winter 2026}
+\author{CS 418, Winter 2026}
 \date{March 5, 2026}
 
 \begin{document}
@@ -207,12 +207,34 @@ def preamble():
 
 def introduction():
     return r"""
+\section{Introduction}
+
+For HW3A, twelve students in CS~418 each built a deterministic, single-tape
+Turing machine to decide a language based on the triangular numbers.
+The competition ranks these machines by how efficiently they use the tape
+head, counted in applications of the transition function $\delta$, on a
+shared test suite of 123 inputs ranging from the empty string up to
+$|w| \approx 5.8$ million symbols.
+
+Two broad strategies emerged.  Most students wrote compact machines
+(10--36 states) that sweep back and forth across the tape, crossing off
+symbols in patterns that verify the triangular sum.  Two students took
+a radically different approach: precomputing a lookup table of up to
+1.6 million states that resolves small inputs in a single left-to-right
+pass.  The large test suite was specifically designed to find the
+boundary where these tables run out. The results reveal a
+three-phase crossover that neither strategy dominates everywhere.
+
 \section{Problem}
 
 Let $T(n) = \frac{n(n+1)}{2}$ denote the $n$-th triangular number. The language is:
 \[
 A = \{ a^n b^m \mid n \geq 0 \text{ and } m = T(n) \}
 \]
+\noindent The first few triangular numbers are $T(0)=0$, $T(1)=1$, $T(2)=3$,
+$T(3)=6$, $T(4)=10$, so the language includes $\varepsilon$,
+\texttt{ab}, \texttt{aabbb}, \texttt{aaabbbbbb}, \ldots
+
 Each student built a single-tape Turing machine to decide $A$.
 
 \subsection{Step Counting}
@@ -229,8 +251,8 @@ movement direction.
 
 \medskip
 \noindent\textbf{Example.} Suppose the machine is in configuration
-$(q_3,\; \texttt{a\,b\,\_},\; 1)$---state $q_3$, tape \texttt{ab\_}, head
-at position~1 (over~\texttt{b}). If $\delta(q_3, \texttt{b}) = (q_5,
+$(q_3,\; \texttt{a\,b\,\_},\; 1)$ (state $q_3$, tape \texttt{ab\_}, head
+at position~1, over~\texttt{b}). If $\delta(q_3, \texttt{b}) = (q_5,
 \texttt{X}, R)$, then one step:
 \begin{enumerate}
   \item Writes \texttt{X} at position 1, producing tape \texttt{aX\_}.
@@ -269,7 +291,7 @@ $\varepsilon$ & $(q_0, \texttt{\_}, 0)$ &
 \end{center}
 
 \noindent Note that the step count does not include the initial configuration
-itself---only the transitions that follow it.
+itself; only the transitions that follow it.
 
 \subsection{Scoring}
 
@@ -335,8 +357,8 @@ The combined test suite contains 123 inputs divided into two fixtures.
 \paragraph{Public suite (41 cases).}
 Inputs with $n = 0$ to $39$ (not every $n$ value), including 13 accept
 cases ($m = T(n)$) and 28 reject cases ($m \neq T(n)$). All reject
-inputs consist of $a^n b^m$ with an incorrect count of $b$'s---no
-interleaving, no extraneous symbols. The suite includes the edge case
+inputs consist of $a^n b^m$ with an incorrect count of $b$'s (no
+interleaving, no extraneous symbols). The suite includes the edge case
 $\varepsilon$ ($n = 0$, accept). The largest input has $|w| = 1{,}508$.
 
 \paragraph{Large suite (82 cases).}
@@ -664,7 +686,7 @@ def per_case_breakdown(data_list, mapping, detail_data):
         if not accept_tests:
             continue
 
-        lines.append(f"\\subsection{{Machine {mid} --- Per-Case Steps}}")
+        lines.append(f"\\subsection{{Machine {mid}: Per-Case Steps}}")
         lines.append("")
         lines.append(r"\begin{longtable}{r r r r}")
         lines.append(r"\toprule")
@@ -690,7 +712,7 @@ def precomputation_analysis(data_list, mapping, detail_data):
     """Analyze whether large inputs broke the precomputation tables.
 
     Focuses on the top 2 machines (E and I), comparing their per-case
-    step counts and analyzing growth patterns.
+    step counts and analyzing the three-phase crossover behavior.
     """
     if not detail_data:
         return ""
@@ -729,6 +751,62 @@ def precomputation_analysis(data_list, mapping, detail_data):
     steps2 = accept_steps(tests2)
     common_ns = sorted(set(steps1.keys()) & set(steps2.keys()))
 
+    if not common_ns:
+        return ""
+
+    # --- Compute phase boundaries ---
+    # Phase 1: m1 wins (ratio < 1), Phase 2: m2 wins (ratio > 1), Phase 3: m1 wins again
+    # ratio = steps_m1 / steps_m2; ratio < 1 means m1 is faster
+    ratios_m1_over_m2 = []
+    for n in common_ns:
+        r = steps1[n] / steps2[n] if steps2[n] > 0 else 1.0
+        ratios_m1_over_m2.append((n, r))
+
+    # Find first crossover: where m1 becomes slower (ratio crosses above 1)
+    phase1_end = None
+    for i in range(len(ratios_m1_over_m2) - 1):
+        n_cur, r_cur = ratios_m1_over_m2[i]
+        n_next, r_next = ratios_m1_over_m2[i + 1]
+        if r_cur <= 1.0 and r_next > 1.0:
+            phase1_end = (n_cur + n_next) / 2
+            break
+
+    # Find second crossover: where m1 becomes faster again (ratio crosses below 1)
+    phase2_end = None
+    if phase1_end is not None:
+        past_first = False
+        for i in range(len(ratios_m1_over_m2) - 1):
+            n_cur, r_cur = ratios_m1_over_m2[i]
+            n_next, r_next = ratios_m1_over_m2[i + 1]
+            if n_cur > phase1_end:
+                past_first = True
+            if past_first and r_cur > 1.0 and r_next <= 1.0:
+                phase2_end = (n_cur + n_next) / 2
+                break
+
+    # Compute summary stats for each phase
+    def phase_stats(ns_in_phase):
+        """Return (count, max_ratio, min_ratio) for m1/m2 ratio."""
+        rs = [steps1[n] / steps2[n] for n in ns_in_phase if steps2[n] > 0]
+        if not rs:
+            return 0, 0, 0
+        return len(rs), max(rs), min(rs)
+
+    phase1_ns = [n for n in common_ns if phase1_end is None or n < phase1_end]
+    phase2_ns = [n for n in common_ns
+                 if phase1_end is not None and n >= phase1_end
+                 and (phase2_end is None or n < phase2_end)]
+    phase3_ns = [n for n in common_ns if phase2_end is not None and n >= phase2_end]
+
+    # Find the n where m2 wins most dramatically (max ratio, m1/m2 >> 1)
+    peak_n = None
+    peak_ratio = 0
+    for n in phase2_ns:
+        r = steps1[n] / steps2[n] if steps2[n] > 0 else 0
+        if r > peak_ratio:
+            peak_ratio = r
+            peak_n = n
+
     lines = [r"\section{Precomputation Analysis}", ""]
 
     lines.append(
@@ -736,38 +814,145 @@ def precomputation_analysis(data_list, mapping, detail_data):
         f"({format_number(m1['states'])} states) and Machine~{mid2} "
         f"({format_number(m2['states'])} states). "
         f"The large test suite includes inputs up to $n = 3{{,}}400$ specifically "
-        f"to test whether precomputation tables have finite coverage.")
+        f"to test whether precomputation tables have finite coverage. "
+        f"The key question: does a larger table always win?")
+    lines.append("")
+
+    # === HEADLINE PLOT: Step Ratio with Phase Shading ===
+    lines.append(f"\\subsection{{The Crossover: Machine {mid1} vs.\\ Machine {mid2}}}")
+    lines.append("")
+
+    lines.append(r"\begin{figure}[H]")
+    lines.append(r"\centering")
+    lines.append(r"\begin{tikzpicture}")
+    lines.append(r"\begin{axis}[")
+    lines.append(r"  xlabel={$n$ (number of \texttt{a}'s in input)},")
+    lines.append(f"  ylabel={{Steps ratio ({mid1}/{mid2})}},")
+    lines.append(r"  ymode=log,")
+    lines.append(r"  width=0.92\textwidth,")
+    lines.append(r"  height=0.6\textwidth,")
+    lines.append(r"  grid=major,")
+    lines.append(r"  grid style={gray!30},")
+    lines.append(r"  xmin=0,")
+    lines.append(f"  xmax={common_ns[-1] + 100},")
+    lines.append(r"  legend style={at={(0.03,0.97)}, anchor=north west, font=\small},")
+    lines.append(r"]")
+
+    # Compute y-axis bounds from data (log scale, with padding)
+    max_n = common_ns[-1] + 100
+    all_ratios = [r for _, r in ratios_m1_over_m2 if r > 0]
+    ymin_val = min(all_ratios) * 0.3
+    ymax_val = max(all_ratios) * 3.0
+
+    # Phase shading using axis cs with explicit y bounds
+    if phase1_end is not None:
+        lines.append(f"\\fill[blue!8] (axis cs:0,{ymin_val:.4f}) "
+                     f"rectangle (axis cs:{phase1_end:.0f},{ymax_val:.1f});")
+    if phase1_end is not None and phase2_end is not None:
+        lines.append(f"\\fill[red!8] (axis cs:{phase1_end:.0f},{ymin_val:.4f}) "
+                     f"rectangle (axis cs:{phase2_end:.0f},{ymax_val:.1f});")
+    if phase2_end is not None:
+        lines.append(f"\\fill[blue!8] (axis cs:{phase2_end:.0f},{ymin_val:.4f}) "
+                     f"rectangle (axis cs:{max_n},{ymax_val:.1f});")
+
+    # Horizontal line at ratio = 1 (parity)
+    lines.append(r"\addplot[black, dashed, thick, forget plot] coordinates {")
+    lines.append(f"  (0, 1) ({max_n}, 1)")
+    lines.append(r"};")
+
+    # Phase boundary vertical lines
+    if phase1_end is not None:
+        lines.append(f"\\draw[gray, densely dashed, thick] "
+                     f"(axis cs:{phase1_end:.0f},{ymin_val:.4f}) -- "
+                     f"(axis cs:{phase1_end:.0f},{ymax_val:.1f});")
+    if phase2_end is not None:
+        lines.append(f"\\draw[gray, densely dashed, thick] "
+                     f"(axis cs:{phase2_end:.0f},{ymin_val:.4f}) -- "
+                     f"(axis cs:{phase2_end:.0f},{ymax_val:.1f});")
+
+    # The actual ratio data
+    lines.append(r"\addplot[blue!70!black, very thick, mark=*, mark size=1.5pt] coordinates {")
+    for n, r in ratios_m1_over_m2:
+        lines.append(f"  ({n}, {r:.4f})")
+    lines.append(r"};")
+    lines.append(f"\\addlegendentry{{{mid1} steps / {mid2} steps}}")
+
+    # Phase labels as text nodes
+    if phase1_end is not None:
+        label_x1 = phase1_end / 2
+        lines.append(f"\\node[font=\\small\\bfseries, blue!70!black] at "
+                     f"(axis cs:{label_x1:.0f}, 0.15) "
+                     f"{{{mid1} faster}};")
+        lines.append(f"\\node[font=\\tiny, text=gray] at "
+                     f"(axis cs:{label_x1:.0f}, 0.08) "
+                     f"{{both tables active}};")
+    if phase1_end is not None and phase2_end is not None:
+        label_x2 = (phase1_end + phase2_end) / 2
+        lines.append(f"\\node[font=\\small\\bfseries, red!70!black] at "
+                     f"(axis cs:{label_x2:.0f}, 0.15) "
+                     f"{{{mid2} faster}};")
+        lines.append(f"\\node[font=\\tiny, text=gray] at "
+                     f"(axis cs:{label_x2:.0f}, 0.08) "
+                     f"{{{mid1} table exhausted}};")
+    if phase2_end is not None:
+        label_x3 = (phase2_end + max_n) / 2
+        lines.append(f"\\node[font=\\small\\bfseries, blue!70!black] at "
+                     f"(axis cs:{label_x3:.0f}, 0.15) "
+                     f"{{{mid1} faster}};")
+        lines.append(f"\\node[font=\\tiny, text=gray] at "
+                     f"(axis cs:{label_x3:.0f}, 0.08) "
+                     f"{{both tables exhausted}};")
+
+    lines.append(r"\end{axis}")
+    lines.append(r"\end{tikzpicture}")
+
+    caption = (f"\\caption{{Step count ratio (Machine~{mid1} / Machine~{mid2}) "
+               f"on accept inputs. Below the dashed line, {mid1} is faster; "
+               f"above it, {mid2} is faster. ")
+    if phase1_end and phase2_end and peak_n:
+        caption += (f"Three phases emerge: {mid1} wins for small $n$ "
+                    f"(both tables active), {mid2} wins by up to "
+                    f"${peak_ratio:.0f}\\times$ when only its table remains, "
+                    f"and {mid1} wins again once both fall back to algorithms.")
+    caption += "}"
+    lines.append(caption)
+    lines.append(r"\end{figure}")
     lines.append("")
 
     # Comparison table
-    lines.append(f"\\subsection{{Machine {mid1} vs.\\ Machine {mid2}}}")
+    lines.append(f"\\subsection{{Per-Case Comparison}}")
     lines.append("")
     lines.append(r"\begin{longtable}{r r r r r}")
     lines.append(r"\toprule")
-    lines.append(f"$n$ & $|w|$ & {mid1} steps & {mid2} steps & Ratio \\\\")
+    lines.append(f"$n$ & $|w|$ & {mid1} steps & {mid2} steps & Ratio ({mid1}/{mid2}) \\\\")
     lines.append(r"\midrule")
     lines.append(r"\endhead")
 
     for n in common_ns:
         s1 = steps1[n]
         s2 = steps2[n]
-        # Compute input length: n + T(n) = n + n(n+1)/2
         w = n + n * (n + 1) // 2
-        ratio = s2 / s1 if s1 > 0 else 0
+        ratio = s1 / s2 if s2 > 0 else 0
+        # Highlight rows where the winner changes
+        if ratio < 1:
+            ratio_str = f"\\textcolor{{blue!70!black}}{{{ratio:.2f}$\\times$}}"
+        elif ratio > 1:
+            ratio_str = f"\\textcolor{{red!70!black}}{{{ratio:.1f}$\\times$}}"
+        else:
+            ratio_str = f"{ratio:.2f}$\\times$"
         lines.append(
             f"{n} & {format_number(w)} & "
             f"{format_number(s1)} & {format_number(s2)} & "
-            f"{ratio:.1f}$\\times$ \\\\")
+            f"{ratio_str} \\\\")
 
     lines.append(r"\bottomrule")
     lines.append(r"\end{longtable}")
     lines.append("")
 
-    # Growth analysis
-    lines.append(r"\subsection{Growth Analysis}")
+    # === Step growth plot with phase boundaries ===
+    lines.append(r"\subsection{Step Count Growth}")
     lines.append("")
 
-    # Plot step growth for both machines
     lines.append(r"\begin{figure}[H]")
     lines.append(r"\centering")
     lines.append(r"\begin{tikzpicture}")
@@ -775,45 +960,88 @@ def precomputation_analysis(data_list, mapping, detail_data):
     lines.append(r"  xlabel={$n$},")
     lines.append(r"  ylabel={Steps},")
     lines.append(r"  ymode=log,")
-    lines.append(r"  width=0.85\textwidth,")
+    lines.append(r"  width=0.92\textwidth,")
     lines.append(r"  height=0.55\textwidth,")
     lines.append(r"  grid=major,")
+    lines.append(r"  grid style={gray!30},")
+    lines.append(r"  xmin=0,")
+    lines.append(f"  xmax={common_ns[-1] + 100},")
     lines.append(r"  legend pos=north west,")
     lines.append(r"]")
 
-    lines.append(r"\addplot[blue, thick, mark=*, mark size=1.5pt] coordinates {")
+    # Phase boundary vertical lines
+    if phase1_end is not None:
+        lines.append(f"\\draw[gray, densely dashed] "
+                     f"(axis cs:{phase1_end:.0f},1) -- "
+                     f"(axis cs:{phase1_end:.0f},1e12);")
+        lines.append(f"\\node[font=\\tiny, text=gray, rotate=90, anchor=south] at "
+                     f"(axis cs:{phase1_end:.0f},1e10) "
+                     f"{{{mid1} table limit}};")
+    if phase2_end is not None:
+        lines.append(f"\\draw[gray, densely dashed] "
+                     f"(axis cs:{phase2_end:.0f},1) -- "
+                     f"(axis cs:{phase2_end:.0f},1e12);")
+        lines.append(f"\\node[font=\\tiny, text=gray, rotate=90, anchor=south] at "
+                     f"(axis cs:{phase2_end:.0f},1e10) "
+                     f"{{{mid2} table limit}};")
+
+    lines.append(r"\addplot[blue, very thick, mark=*, mark size=1.5pt] coordinates {")
     for n in common_ns:
         lines.append(f"  ({n}, {steps1[n]})")
     lines.append(r"};")
-    lines.append(f"\\addlegendentry{{Machine {mid1}}}")
+    lines.append(f"\\addlegendentry{{Machine {mid1} ({format_number(m1['states'])} states)}}")
 
-    lines.append(r"\addplot[red, thick, mark=square*, mark size=1.5pt] coordinates {")
+    lines.append(r"\addplot[red, very thick, mark=square*, mark size=1.5pt] coordinates {")
     for n in common_ns:
         lines.append(f"  ({n}, {steps2[n]})")
     lines.append(r"};")
-    lines.append(f"\\addlegendentry{{Machine {mid2}}}")
+    lines.append(f"\\addlegendentry{{Machine {mid2} ({format_number(m2['states'])} states)}}")
 
     lines.append(r"\end{axis}")
     lines.append(r"\end{tikzpicture}")
-    lines.append(f"\\caption{{Step count growth for Machine~{mid1} and "
-                 f"Machine~{mid2} on accept inputs ($m = T(n)$).}}")
+    lines.append(f"\\caption{{Step count on accept inputs. Vertical dashed lines mark "
+                 f"where each machine's precomputed table is exhausted. "
+                 f"Before the boundary, lookup is $O(|w|)$; after, the machine falls "
+                 f"back to a slower algorithm.}}")
     lines.append(r"\end{figure}")
     lines.append("")
 
-    # Steps/|w| ratio plot to detect transition from O(n) to polynomial
+    # === Steps/|w| ratio plot ===
     lines.append(r"\begin{figure}[H]")
     lines.append(r"\centering")
     lines.append(r"\begin{tikzpicture}")
     lines.append(r"\begin{axis}[")
     lines.append(r"  xlabel={$n$},")
     lines.append(r"  ylabel={Steps / $|w|$},")
-    lines.append(r"  width=0.85\textwidth,")
-    lines.append(r"  height=0.55\textwidth,")
+    lines.append(r"  width=0.92\textwidth,")
+    lines.append(r"  height=0.5\textwidth,")
     lines.append(r"  grid=major,")
+    lines.append(r"  grid style={gray!30},")
+    lines.append(r"  xmin=0,")
+    lines.append(f"  xmax={common_ns[-1] + 100},")
     lines.append(r"  legend pos=north west,")
     lines.append(r"]")
 
-    lines.append(r"\addplot[blue, thick, mark=*, mark size=1.5pt] coordinates {")
+    # Compute steps/|w| ratios for y-axis bounds
+    sw_all = []
+    for n in common_ns:
+        w = n + n * (n + 1) // 2
+        if w > 0:
+            sw_all.append(steps1[n] / w)
+            sw_all.append(steps2[n] / w)
+    sw_ymax = max(sw_all) * 1.1 if sw_all else 100
+
+    # Phase boundary lines
+    if phase1_end is not None:
+        lines.append(f"\\draw[gray, densely dashed] "
+                     f"(axis cs:{phase1_end:.0f},0) -- "
+                     f"(axis cs:{phase1_end:.0f},{sw_ymax:.0f});")
+    if phase2_end is not None:
+        lines.append(f"\\draw[gray, densely dashed] "
+                     f"(axis cs:{phase2_end:.0f},0) -- "
+                     f"(axis cs:{phase2_end:.0f},{sw_ymax:.0f});")
+
+    lines.append(r"\addplot[blue, very thick, mark=*, mark size=1.5pt] coordinates {")
     for n in common_ns:
         w = n + n * (n + 1) // 2
         ratio = steps1[n] / w if w > 0 else 0
@@ -821,7 +1049,7 @@ def precomputation_analysis(data_list, mapping, detail_data):
     lines.append(r"};")
     lines.append(f"\\addlegendentry{{Machine {mid1}}}")
 
-    lines.append(r"\addplot[red, thick, mark=square*, mark size=1.5pt] coordinates {")
+    lines.append(r"\addplot[red, very thick, mark=square*, mark size=1.5pt] coordinates {")
     for n in common_ns:
         w = n + n * (n + 1) // 2
         ratio = steps2[n] / w if w > 0 else 0
@@ -831,51 +1059,104 @@ def precomputation_analysis(data_list, mapping, detail_data):
 
     lines.append(r"\end{axis}")
     lines.append(r"\end{tikzpicture}")
-    lines.append(f"\\caption{{Steps per input symbol (steps/$|w|$). A constant ratio "
-                 f"indicates $O(n)$ behavior (pure lookup); an increasing ratio indicates "
-                 f"the machine has exceeded its precomputed table and fallen back to an "
-                 f"algorithmic strategy.}}")
+    lines.append(f"\\caption{{Steps per input symbol. A constant ratio means $O(|w|)$ "
+                 f"behavior (pure lookup). An increasing ratio signals the precomputed "
+                 f"table has been exhausted and the machine has fallen back to a "
+                 f"slower algorithm.}}")
     lines.append(r"\end{figure}")
     lines.append("")
 
-    # Textual analysis
-    # Detect where step growth transitions from O(n) to super-linear
-    # by looking for a jump in steps/|w| ratio
+    # === Findings ===
     lines.append(r"\subsection{Findings}")
     lines.append("")
 
+    # Per-machine table-limit analysis
     for d, steps_dict, mid in [(m1, steps1, mid1), (m2, steps2, mid2)]:
         ns_sorted = sorted(steps_dict.keys())
-        ratios = []
+        sw_ratios = []
         for n in ns_sorted:
             w = n + n * (n + 1) // 2
-            ratios.append((n, steps_dict[n] / w if w > 0 else 0))
+            sw_ratios.append((n, steps_dict[n] / w if w > 0 else 0))
 
         # Find transition point: where ratio increases significantly
         transition_n = None
-        if len(ratios) >= 3:
-            # Baseline: median of first 5 ratios
-            baseline_ratios = [r for _, r in ratios[:min(5, len(ratios))]]
+        if len(sw_ratios) >= 3:
+            baseline_ratios = [r for _, r in sw_ratios[:min(5, len(sw_ratios))]]
             baseline = sorted(baseline_ratios)[len(baseline_ratios) // 2]
-            for n, r in ratios:
+            for n, r in sw_ratios:
                 if baseline > 0 and r > baseline * 3:
                     transition_n = n
                     break
 
         if transition_n:
             lines.append(
-                f"\\textbf{{Machine {mid}:}} The steps/$|w|$ ratio remains roughly "
-                f"constant for small $n$, indicating the machine resolves these inputs "
-                f"by table lookup in $O(n)$ steps. "
-                f"Around $n = {transition_n}$, the ratio begins to increase, indicating "
-                f"the precomputed table has been exhausted and the machine has "
+                f"\\textbf{{Machine {mid}}} ({format_number(d['states'])} states): "
+                f"the steps/$|w|$ ratio remains roughly constant for small $n$, "
+                f"indicating pure table lookup in $O(|w|)$ steps. "
+                f"Around $n = {transition_n}$, the ratio begins to increase: the "
+                f"precomputed table has been exhausted and the machine has "
                 f"transitioned to a slower algorithmic fallback.")
         else:
             lines.append(
-                f"\\textbf{{Machine {mid}:}} The steps/$|w|$ ratio remains relatively "
-                f"stable across all tested values of $n$, suggesting the precomputation "
-                f"table covers the full range of inputs tested ($n$ up to "
-                f"{ns_sorted[-1] if ns_sorted else '?'}).")
+                f"\\textbf{{Machine {mid}}} ({format_number(d['states'])} states): "
+                f"the steps/$|w|$ ratio remains relatively stable across all "
+                f"tested values of $n$ (up to "
+                f"{ns_sorted[-1] if ns_sorted else '?'}), suggesting the "
+                f"precomputation table covers the full test range.")
+        lines.append("")
+
+    # Three-phase crossover summary
+    if phase1_end is not None and phase2_end is not None:
+        lines.append(r"\medskip")
+        lines.append(r"\noindent\textbf{Three-Phase Crossover.}")
+        lines.append(f"The step ratio plot reveals three distinct regimes:")
+        lines.append("")
+        lines.append(r"\begin{enumerate}")
+
+        # Phase 1 stats
+        p1_count, p1_max_r, p1_min_r = phase_stats(phase1_ns)
+        lines.append(
+            f"\\item \\textbf{{Phase 1}} ($n \\lesssim {phase1_end:.0f}$): "
+            f"Both tables are active. Machine~{mid1} is faster by a "
+            f"factor of roughly ${1/p1_min_r:.1f}\\times$ to "
+            f"${1/p1_max_r:.1f}\\times$. "
+            f"With fewer states to traverse per lookup, {mid1} has lower "
+            f"constant overhead despite its smaller table.")
+
+        # Phase 2 stats
+        if peak_n is not None:
+            lines.append(
+                f"\\item \\textbf{{Phase 2}} "
+                f"(${phase1_end:.0f} \\lesssim n \\lesssim {phase2_end:.0f}$): "
+                f"Machine~{mid1}'s table is exhausted; it falls back to an "
+                f"algorithmic strategy while {mid2} still resolves inputs by "
+                f"lookup. Machine~{mid2} wins by up to "
+                f"${peak_ratio:.0f}\\times$ (at $n = {peak_n}$). "
+                f"The large test suite was specifically designed to target this "
+                f"range.")
+
+        # Phase 3 stats
+        p3_count, p3_max_r, p3_min_r = phase_stats(phase3_ns)
+        if p3_count > 0:
+            lines.append(
+                f"\\item \\textbf{{Phase 3}} ($n \\gtrsim {phase2_end:.0f}$): "
+                f"Both tables are exhausted. Machine~{mid1}'s fallback "
+                f"algorithm outperforms {mid2}'s by a factor of "
+                f"${1/p3_min_r:.1f}\\times$ to "
+                f"${1/p3_max_r:.1f}\\times$. "
+                f"Having a more efficient fallback algorithm matters more "
+                f"than having a larger table when both are exceeded.")
+
+        lines.append(r"\end{enumerate}")
+        lines.append("")
+        lines.append(
+            f"The answer to ``does a larger table always win?'' is no. "
+            f"Machine~{mid2}'s $10\\times$ larger table "
+            f"({format_number(m2['states'])} vs.\\ {format_number(m1['states'])} states) "
+            f"wins decisively in Phase~2, but Machine~{mid1}'s superior fallback "
+            f"algorithm reclaims the lead once both tables are exceeded. "
+            f"Over the full test suite, Machine~{mid1} finishes with fewer total "
+            f"steps.")
         lines.append("")
 
     return "\n".join(lines)
