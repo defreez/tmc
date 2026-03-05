@@ -175,6 +175,47 @@ std::string ValueAfterColon(const std::string& line) {
   return Trim(line.substr(pos + 1));
 }
 
+// Parse inline transitions: {sym:[next,write,dir],sym:[next,write,dir],...}
+// content is the string inside the outer braces
+void ParseInlineTransitions(TM& tm, const std::string& state_name,
+                            const std::string& content) {
+  size_t pos = 0;
+  while (pos < content.size()) {
+    // Skip whitespace and commas between entries
+    while (pos < content.size() && (content[pos] == ' ' || content[pos] == ','))
+      ++pos;
+    if (pos >= content.size()) break;
+
+    // Find ":[" which separates symbol key from value list
+    size_t bracket_colon = content.find(":[", pos);
+    if (bracket_colon == std::string::npos) break;
+
+    std::string sym_str = Trim(content.substr(pos, bracket_colon - pos));
+
+    // Find closing ']'
+    size_t bracket_close = content.find(']', bracket_colon + 2);
+    if (bracket_close == std::string::npos) break;
+
+    // Extract [next,write,dir] and parse with ParseList
+    std::string list_str = content.substr(bracket_colon + 1,
+                                          bracket_close - bracket_colon);
+    auto tokens = ParseList(list_str);
+    if (tokens.size() != 3) {
+      throw std::runtime_error(
+          "Expected 3 elements in inline transition for state " + state_name +
+          ": " + list_str);
+    }
+
+    Symbol read_sym = ParseSymbol(sym_str);
+    State next_state = Unquote(tokens[0]);
+    Symbol write_sym = ParseSymbol(tokens[1]);
+    Dir dir = ParseDir(tokens[2]);
+    tm.AddTransition(state_name, read_sym, write_sym, dir, next_state);
+
+    pos = bracket_close + 1;
+  }
+}
+
 }  // namespace
 
 TM FromYAML(const std::string& yaml) {
@@ -184,6 +225,14 @@ TM FromYAML(const std::string& yaml) {
 
   std::string current_state;
   bool in_delta = false;
+
+  // State for YAML block sequence format (adan-blanco style):
+  //   sym:
+  //   - next
+  //   - write
+  //   - dir
+  std::string pending_read_sym;
+  std::vector<std::string> pending_values;
 
   while (std::getline(in, line)) {
     // Strip trailing \r for Windows line endings
@@ -195,56 +244,97 @@ TM FromYAML(const std::string& yaml) {
     // Detect indentation level
     size_t indent = line.find_first_not_of(' ');
 
-    if (trimmed.rfind("states:", 0) == 0) {
-      // Parse states list (we don't strictly need this since Finalize builds it)
+    if (trimmed.rfind("states:", 0) == 0 && indent == 0) {
       in_delta = false;
       continue;
-    } else if (trimmed.rfind("input_alphabet:", 0) == 0) {
+    } else if (trimmed.rfind("input_alphabet:", 0) == 0 && indent == 0) {
       in_delta = false;
       auto tokens = ParseList(trimmed);
       for (const auto& t : tokens) {
         tm.input_alphabet.insert(ParseSymbol(t));
       }
-    } else if (trimmed.rfind("tape_alphabet_extra:", 0) == 0) {
+    } else if (trimmed.rfind("tape_alphabet_extra:", 0) == 0 && indent == 0) {
       in_delta = false;
       auto tokens = ParseList(trimmed);
       for (const auto& t : tokens) {
         tm.tape_alphabet.insert(ParseSymbol(t));
       }
-    } else if (trimmed.rfind("start_state:", 0) == 0) {
+    } else if (trimmed.rfind("start_state:", 0) == 0 && indent == 0) {
       in_delta = false;
       tm.start = Unquote(ValueAfterColon(trimmed));
-    } else if (trimmed.rfind("accept_state:", 0) == 0) {
+    } else if (trimmed.rfind("accept_state:", 0) == 0 && indent == 0) {
       in_delta = false;
       tm.accept = Unquote(ValueAfterColon(trimmed));
-    } else if (trimmed.rfind("reject_state:", 0) == 0) {
+    } else if (trimmed.rfind("reject_state:", 0) == 0 && indent == 0) {
       in_delta = false;
       tm.reject = Unquote(ValueAfterColon(trimmed));
-    } else if (trimmed.rfind("delta:", 0) == 0) {
+    } else if (trimmed.rfind("delta:", 0) == 0 && indent == 0) {
       in_delta = true;
     } else if (in_delta) {
       // Inside delta section
-      if (indent == 2) {
-        // State name line: "  state_name:"
-        current_state = Unquote(Trim(trimmed.substr(0, trimmed.size() - 1)));  // strip trailing ':'
-      } else if (indent >= 4 && !current_state.empty()) {
-        // Transition line: "    symbol: [next, write, dir]"
-        size_t colon_pos = trimmed.find(':');
-        if (colon_pos == std::string::npos) continue;
 
-        std::string sym_str = Trim(trimmed.substr(0, colon_pos));
-        Symbol read_sym = ParseSymbol(sym_str);
-
-        auto tokens = ParseList(trimmed);
-        if (tokens.size() != 3) {
-          throw std::runtime_error("Expected 3 elements in transition: " + trimmed);
+      // Handle YAML block sequence lines: "    - value"
+      if (trimmed.size() >= 2 && trimmed[0] == '-' && trimmed[1] == ' ') {
+        if (!pending_read_sym.empty() && !current_state.empty()) {
+          pending_values.push_back(Trim(trimmed.substr(2)));
+          if (pending_values.size() == 3) {
+            State next_state = Unquote(pending_values[0]);
+            Symbol write_sym = ParseSymbol(pending_values[1]);
+            Dir dir = ParseDir(pending_values[2]);
+            tm.AddTransition(current_state, ParseSymbol(pending_read_sym),
+                             write_sym, dir, next_state);
+            pending_read_sym.clear();
+            pending_values.clear();
+          }
         }
+        continue;
+      }
 
-        State next_state = Unquote(tokens[0]);
-        Symbol write_sym = ParseSymbol(tokens[1]);
-        Dir dir = ParseDir(tokens[2]);
+      // Non-list-item line: discard any incomplete block sequence
+      pending_read_sym.clear();
+      pending_values.clear();
 
-        tm.AddTransition(current_state, read_sym, write_sym, dir, next_state);
+      size_t colon_pos = trimmed.find(':');
+      if (colon_pos == std::string::npos) continue;
+
+      if (indent >= 1 && indent < 4) {
+        // State name line (indent 1 or 2)
+        std::string state_name = Unquote(Trim(trimmed.substr(0, colon_pos)));
+        std::string rest = Trim(trimmed.substr(colon_pos + 1));
+
+        current_state = state_name;
+
+        if (!rest.empty() && rest[0] == '{') {
+          // Inline format: state: {sym:[next,write,dir],...}
+          std::string inner = rest.substr(1);
+          if (!inner.empty() && inner.back() == '}') inner.pop_back();
+          ParseInlineTransitions(tm, current_state, inner);
+        }
+        // else: standard multi-line format, just set current_state
+      } else if (indent >= 4 && !current_state.empty()) {
+        // Transition line
+        std::string sym_str = Trim(trimmed.substr(0, colon_pos));
+        std::string rest = Trim(trimmed.substr(colon_pos + 1));
+
+        if (rest.empty()) {
+          // Block sequence format: bare "sym:" followed by "- value" lines
+          pending_read_sym = sym_str;
+          pending_values.clear();
+        } else {
+          // Standard format: "sym: [next, write, dir]"
+          Symbol read_sym = ParseSymbol(sym_str);
+          auto tokens = ParseList(trimmed);
+          if (tokens.size() != 3) {
+            throw std::runtime_error("Expected 3 elements in transition: " +
+                                     trimmed);
+          }
+
+          State next_state = Unquote(tokens[0]);
+          Symbol write_sym = ParseSymbol(tokens[1]);
+          Dir dir = ParseDir(tokens[2]);
+
+          tm.AddTransition(current_state, read_sym, write_sym, dir, next_state);
+        }
       }
     }
   }

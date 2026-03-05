@@ -51,6 +51,15 @@ bool IsTriangular(const std::string& s) {
   return m == n * (n + 1) / 2;
 }
 
+// Extract student name from path: "/foo/bar/kai-fagundes.tm" -> "kai-fagundes"
+std::string StudentName(const std::string& path) {
+  size_t slash = path.rfind('/');
+  std::string base = (slash == std::string::npos) ? path : path.substr(slash + 1);
+  size_t dot = base.rfind('.');
+  if (dot != std::string::npos) base = base.substr(0, dot);
+  return base;
+}
+
 void PrintUsage(const char* prog) {
   std::cerr << "TMC - Turing Machine Compiler\n\n";
   std::cerr << "Usage: " << prog << " [options] <source.tmc|source.tm>\n";
@@ -63,6 +72,8 @@ void PrintUsage(const char* prog) {
   std::cerr << "  --max-states <n>  Maximum states to generate\n";
   std::cerr << "  --max-symbols <n> Maximum tape alphabet size\n";
   std::cerr << "  --bench <file>    Benchmark against test suite file\n";
+  std::cerr << "  --timeout <secs>  Wall clock timeout per test case (default: 60)\n";
+  std::cerr << "  --csv <file>      Write CSV results (use with --bench)\n";
 }
 
 int main(int argc, char* argv[]) {
@@ -75,11 +86,13 @@ int main(int argc, char* argv[]) {
   std::string output_file;
   std::string test_input;
   std::string bench_file;
+  std::string csv_file;
   bool verbose = false;
   bool optimize = true;
   int precompute_len = 0;
   int max_states = 0;
   int max_symbols = 0;
+  double timeout_secs = 60.0;
 
   for (int i = 1; i < argc; ++i) {
     std::string arg = argv[i];
@@ -99,6 +112,10 @@ int main(int argc, char* argv[]) {
       max_symbols = std::stoi(argv[++i]);
     } else if (arg == "--bench" && i + 1 < argc) {
       bench_file = argv[++i];
+    } else if (arg == "--timeout" && i + 1 < argc) {
+      timeout_secs = std::stod(argv[++i]);
+    } else if (arg == "--csv" && i + 1 < argc) {
+      csv_file = argv[++i];
     } else if (arg[0] != '-') {
       input_file = arg;
     } else {
@@ -177,21 +194,25 @@ int main(int argc, char* argv[]) {
         return 1;
       }
 
-      std::cerr << "TM: " << tm.states.size() << " states, ";
-      int transitions = 0;
+      int num_transitions = 0;
       for (const auto& [state, trans_map] : tm.delta) {
-        transitions += static_cast<int>(trans_map.size());
+        num_transitions += static_cast<int>(trans_map.size());
       }
-      std::cerr << transitions << " transitions\n\n";
+      int num_states = static_cast<int>(tm.states.size());
 
-      tmc::Simulator sim(tm, 10000000);
+      std::cerr << "TM: " << num_states << " states, "
+                << num_transitions << " transitions\n\n";
+
+      tmc::Simulator sim(tm, 86000000000LL);
       using Clock = std::chrono::high_resolution_clock;
 
+      std::string student = StudentName(input_file);
       int passed = 0, failed = 0;
-      long long total_steps = 0;
-      int max_steps = 0;
+      int64_t total_steps = 0;
+      int64_t best_max_steps = 0;
       int max_steps_n = 0;
       int max_steps_len = 0;
+      bool abort_remaining = false;
 
       auto bench_start = Clock::now();
 
@@ -199,28 +220,47 @@ int main(int argc, char* argv[]) {
         const std::string& input = inputs[i];
         bool expected = IsTriangular(input);
 
-        auto t0 = Clock::now();
-        auto result = sim.Run(input);
-        auto t1 = Clock::now();
-        double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-
         int n = 0;
         for (char c : input) {
           if (c == 'a') ++n;
           else break;
         }
 
+        bool timed_out = false;
+        bool correct = false;
+        tmc::RunResult result;
+        double ms = 0;
+
+        if (abort_remaining) {
+          result.accepted = false;
+          result.steps = 0;
+          result.hit_limit = true;
+          timed_out = true;
+        } else {
+          auto t0 = Clock::now();
+          result = sim.Run(input);
+          auto t1 = Clock::now();
+          ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+
+          // Check wall clock timeout
+          timed_out = (ms / 1000.0) >= timeout_secs;
+          correct = (result.accepted == expected) && !result.hit_limit && !timed_out;
+
+          // If hit step limit or timed out, abort all remaining cases
+          if (result.hit_limit || timed_out) {
+            abort_remaining = true;
+          }
+        }
+
         total_steps += result.steps;
-        if (result.steps > max_steps) {
-          max_steps = result.steps;
+        if (result.steps > best_max_steps) {
+          best_max_steps = result.steps;
           max_steps_n = n;
           max_steps_len = static_cast<int>(input.size());
         }
 
-        bool correct = (result.accepted == expected) && !result.hit_limit;
-
         double case_rate = ms > 0 ? result.steps / (ms / 1000.0) : 0;
-        double elapsed_ms = std::chrono::duration<double, std::milli>(t1 - bench_start).count();
+        double elapsed_ms = std::chrono::duration<double, std::milli>(Clock::now() - bench_start).count();
         double cumul_rate = elapsed_ms > 0 ? total_steps / (elapsed_ms / 1000.0) : 0;
 
         std::cout << "[" << std::setw(2) << (i + 1) << "/" << inputs.size() << "] "
@@ -234,6 +274,7 @@ int main(int argc, char* argv[]) {
                   << "  " << std::setprecision(1) << std::setw(5) << case_rate / 1e6 << "M st/s"
                   << "  cumul " << std::setw(5) << cumul_rate / 1e6 << "M st/s";
         if (result.hit_limit) std::cout << " HIT_LIMIT";
+        if (timed_out) std::cout << " TIMEOUT";
         std::cout << "\n";
 
         if (correct) ++passed;
@@ -250,10 +291,40 @@ int main(int argc, char* argv[]) {
       if (failed > 0) std::cout << "Failed:  " << failed << "\n";
       std::cout << "Total:   " << total_steps << " steps\n";
       std::cout << "Average: " << std::fixed << std::setprecision(1) << avg_steps << " steps\n";
-      std::cout << "Max:     " << max_steps << " steps"
+      std::cout << "Max:     " << best_max_steps << " steps"
                 << " (n=" << max_steps_n << ", |w|=" << max_steps_len << ")\n";
       std::cout << "Wall:    " << std::fixed << std::setprecision(1) << total_ms << "ms"
                 << " (" << std::setprecision(0) << steps_per_sec / 1e6 << "M steps/sec)\n";
+
+      // Write CSV if requested
+      if (!csv_file.empty()) {
+        // Append mode: if file doesn't exist, write header first
+        bool write_header = true;
+        {
+          std::ifstream check(csv_file);
+          if (check.good()) {
+            // File exists, check if it has content
+            check.seekg(0, std::ios::end);
+            write_header = (check.tellg() == 0);
+          }
+        }
+
+        std::ofstream csv(csv_file, std::ios::app);
+        if (!csv) {
+          std::cerr << "Error: Cannot open CSV file: " << csv_file << "\n";
+          return 1;
+        }
+        if (write_header) {
+          csv << "student,states,transitions,passed,failed,total_steps,max_steps\n";
+        }
+        csv << student << ","
+            << num_states << ","
+            << num_transitions << ","
+            << passed << ","
+            << failed << ","
+            << total_steps << ","
+            << best_max_steps << "\n";
+      }
 
       return failed > 0 ? 1 : 0;
     }

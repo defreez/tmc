@@ -2,7 +2,7 @@ states: [
   qS,qA,qR,qLoop1,qLoop2,qLoop3,qLoop4,qLoop5,qLoop6,qMark,qFindB,qFindX,qShiftToB,qFlip,qShift,qShiftX,qShiftZ,qShiftS,qShiftV,qShiftQ,qShiftP,qProcess,qCheck
 ]
 
-input_alphabet: [a,b,"(",e,m,p,t,y,")"]
+input_alphabet: [a,b]
 tape_alphabet_extra: [X,Y,Z,_,Q,S,V,P]
 
 start_state: qS
@@ -13,21 +13,6 @@ delta:
   qS:
     a: [qMark,S,R]
     b: [qR,b,S]
-    "(": [qLoop1,"(",R]
-
-  qLoop1:
-    e: [qLoop2,e,R]
-  qLoop2:
-    m: [qLoop3,m,R]
-  qLoop3:
-    p: [qLoop4,p,R]
-  qLoop4:
-    t: [qLoop5,t,R]
-  qLoop5:
-    y: [qLoop6,_,R]
-  qLoop6:
-    ")": [qA,),R]
-
   qMark:
     a: [qMark,X,R]
     b: [qFindX,b,L]

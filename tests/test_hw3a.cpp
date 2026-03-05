@@ -101,13 +101,13 @@ TEST_F(HW3ATest, AllTestCases) {
   ASSERT_FALSE(inputs_.empty()) << "No test inputs loaded";
   std::cout << "\n=== HW3A Public Test Suite (" << inputs_.size() << " cases) ===\n";
 
-  Simulator sim(tm_, 10000000);
+  Simulator sim(tm_, 86000000000LL);
 
   int passed = 0, failed = 0;
-  int total_steps = 0;
-  int max_steps = 0;
+  int64_t total_steps = 0;
+  int64_t max_steps = 0;
   std::string max_steps_input;
-  std::vector<int> step_counts;
+  std::vector<int64_t> step_counts;
 
   for (size_t i = 0; i < inputs_.size(); ++i) {
     const std::string& input = inputs_[i];
