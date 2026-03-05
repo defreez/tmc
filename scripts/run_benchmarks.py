@@ -161,8 +161,8 @@ def run_suite(fixture, output_csv, submissions, step_limit, timeout):
 
 def main():
     parser = argparse.ArgumentParser(description="Run TM benchmarks and generate report")
-    parser.add_argument("--step-limit", type=int, default=100_000_000,
-                        help="Max steps per test case (default: 100M)")
+    parser.add_argument("--step-limit", type=int, default=86_000_000_000,
+                        help="Max steps per test case (default: 86B)")
     parser.add_argument("--timeout", type=float, default=300.0,
                         help="Wall clock timeout per student in seconds (default: 300 = 5 min)")
     args = parser.parse_args()
