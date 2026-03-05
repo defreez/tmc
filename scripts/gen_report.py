@@ -102,6 +102,12 @@ def preamble():
   blankcell/.style={cell, fill=gray!5},
 }
 
+% Space-time diagram symbol colors
+\definecolor{sym-a}{HTML}{3B82F6}
+\definecolor{sym-b}{HTML}{F59E0B}
+\definecolor{sym-blank}{HTML}{F3F4F6}
+\definecolor{sym-head}{HTML}{111827}
+
 \title{\textbf{Theory of Computation: HW3A}\\[0.3em]
        \Large Competition Results}
 \author{CS 418 --- Winter 2026}
@@ -389,8 +395,197 @@ def render_tape_tikz(config, step_label=None):
     return "\n".join(lines)
 
 
+# Color palette for tape symbols in space-time diagrams.
+# Maps symbol char -> LaTeX color name.  Unknown symbols get auto-assigned.
+_BASE_SYMBOL_COLORS = {
+    'a': 'sym-a',
+    'b': 'sym-b',
+    '_': 'sym-blank',
+}
+
+# Extra colors for markers / tape alphabet extras
+_EXTRA_COLORS = [
+    ("HTML", "10B981"),  # green
+    ("HTML", "EF4444"),  # red
+    ("HTML", "8B5CF6"),  # purple
+    ("HTML", "EC4899"),  # pink
+    ("HTML", "06B6D4"),  # cyan
+    ("HTML", "84CC16"),  # lime
+    ("HTML", "F97316"),  # deep orange
+    ("HTML", "6366F1"),  # indigo
+    ("HTML", "14B8A6"),  # teal
+    ("HTML", "A855F7"),  # violet
+    ("HTML", "D946EF"),  # fuchsia
+    ("HTML", "78716C"),  # stone
+]
+
+
+def _build_color_map(configs):
+    """Collect all symbols in a trace and assign colors."""
+    symbols = set()
+    for cfg in configs:
+        for ch in cfg["tape"]:
+            symbols.add(ch)
+
+    color_map = {}
+    extra_idx = 0
+    color_defs = []  # extra \definecolor lines needed
+
+    for sym in sorted(symbols):
+        if sym in _BASE_SYMBOL_COLORS:
+            color_map[sym] = _BASE_SYMBOL_COLORS[sym]
+        else:
+            if extra_idx < len(_EXTRA_COLORS):
+                model, value = _EXTRA_COLORS[extra_idx]
+                cname = f"sym-extra-{extra_idx}"
+                color_defs.append(f"\\definecolor{{{cname}}}{{{model}}}{{{value}}}")
+                color_map[sym] = cname
+                extra_idx += 1
+            else:
+                color_map[sym] = "black"
+
+    return color_map, color_defs
+
+
+def render_spacetime_tikz(trace):
+    """Render a space-time diagram (Wolfram-style waterfall) for a trace.
+
+    Each row = one time step.  Each column = one tape position.
+    Cells are filled with the symbol color.  Head position is marked
+    with a small black dot.
+    """
+    configs = trace["configs"]
+    if not configs:
+        return ""
+
+    color_map, extra_defs = _build_color_map(configs)
+
+    # Determine tape window across all steps
+    max_tape_len = 0
+    max_head = 0
+    for cfg in configs:
+        tape = cfg["tape"]
+        # extend for head past end
+        tl = max(len(tape), cfg["head"] + 1)
+        max_tape_len = max(max_tape_len, tl)
+        max_head = max(max_head, cfg["head"])
+
+    # Visible range: 0 to max used position + 1 padding
+    num_cols = min(max_tape_len + 1, 30)  # cap width
+
+    num_rows = len(configs)
+
+    # Cell size in cm
+    cs = 0.25  # cell size -- small for dense diagrams
+    # If few steps, make cells bigger
+    if num_rows <= 20:
+        cs = 0.35
+
+    # Sample rows if too many (keep first, last, sample middle)
+    max_rows = 200
+    if num_rows > max_rows:
+        step = num_rows / max_rows
+        sampled_indices = [int(i * step) for i in range(max_rows)]
+        if num_rows - 1 not in sampled_indices:
+            sampled_indices.append(num_rows - 1)
+        sampled_configs = [configs[i] for i in sampled_indices]
+    else:
+        sampled_configs = configs
+        sampled_indices = list(range(num_rows))
+
+    actual_rows = len(sampled_configs)
+
+    lines = []
+    if extra_defs:
+        lines.extend(extra_defs)
+
+    lines.append(r"\begin{tikzpicture}[x=1cm, y=1cm]")
+
+    # Draw cells as filled rectangles
+    for row_idx, cfg in enumerate(sampled_configs):
+        tape = cfg["tape"]
+        head = cfg["head"]
+        y = -row_idx * cs
+
+        for col in range(num_cols):
+            if col < len(tape):
+                sym = tape[col]
+            else:
+                sym = '_'
+            color = color_map.get(sym, 'gray')
+            x = col * cs
+
+            lines.append(
+                f"  \\fill[{color}] ({x:.3f},{y:.3f}) "
+                f"rectangle ({x + cs:.3f},{y + cs:.3f});"
+            )
+
+            # Head marker: small black dot
+            if col == head:
+                cx = x + cs / 2
+                cy = y + cs / 2
+                lines.append(
+                    f"  \\fill[sym-head] ({cx:.3f},{cy:.3f}) circle ({cs * 0.2:.3f});"
+                )
+
+    # Border around the whole diagram
+    lines.append(
+        f"  \\draw[gray, thin] (0,{-actual_rows * cs + cs:.3f}) "
+        f"rectangle ({num_cols * cs:.3f},{cs:.3f});"
+    )
+
+    # Y-axis label: step numbers at a few points
+    label_steps = [0]
+    if actual_rows > 1:
+        label_steps.append(actual_rows - 1)
+    if actual_rows > 10:
+        label_steps.append(actual_rows // 2)
+
+    for li in label_steps:
+        real_step = sampled_indices[li] if li < len(sampled_indices) else li
+        y = -li * cs + cs / 2
+        lines.append(
+            f"  \\node[left, font=\\tiny, text=gray] at (0,{y:.3f}) {{{real_step}}};"
+        )
+
+    # Legend: symbol -> color boxes
+    legend_y = -actual_rows * cs - 0.3
+    legend_x = 0.0
+    for sym in sorted(color_map.keys()):
+        color = color_map[sym]
+        display = latex_escape(sym) if sym != '_' else r'\textvisiblespace'
+        lines.append(
+            f"  \\fill[{color}] ({legend_x:.2f},{legend_y:.2f}) "
+            f"rectangle ({legend_x + 0.25:.2f},{legend_y + 0.25:.2f});"
+        )
+        lines.append(
+            f"  \\draw[gray, thin] ({legend_x:.2f},{legend_y:.2f}) "
+            f"rectangle ({legend_x + 0.25:.2f},{legend_y + 0.25:.2f});"
+        )
+        lines.append(
+            f"  \\node[right, font=\\tiny] at ({legend_x + 0.3:.2f},{legend_y + 0.125:.2f}) "
+            f"{{\\texttt{{{display}}}}};"
+        )
+        legend_x += 0.8
+        if legend_x > num_cols * cs - 0.5:
+            legend_x = 0.0
+            legend_y -= 0.35
+
+    # Head legend
+    lines.append(
+        f"  \\fill[sym-head] ({legend_x + 0.125:.3f},{legend_y + 0.125:.3f}) circle (0.06);"
+    )
+    lines.append(
+        f"  \\node[right, font=\\tiny] at ({legend_x + 0.3:.2f},{legend_y + 0.125:.2f}) "
+        f"{{head}};"
+    )
+
+    lines.append(r"\end{tikzpicture}")
+    return "\n".join(lines)
+
+
 def tape_visualizations(trace_data, mapping):
-    """Generate tape visualization for a single machine's trace."""
+    """Generate space-time diagrams and tape snapshots for a machine's traces."""
     lines = []
 
     for trace in trace_data.get("traces", []):
@@ -411,28 +606,12 @@ def tape_visualizations(trace_data, mapping):
                      f"({total_steps} steps, {result_str}{correct_str})}}")
         lines.append("")
 
-        # Sample configs: show ~10-12 snapshots
-        if len(configs) <= 14:
-            sampled = list(range(len(configs)))
-        else:
-            # Always include first and last, sample evenly in between
-            n_middle = 10
-            step_size = (len(configs) - 1) / (n_middle + 1)
-            sampled = [0]
-            for j in range(1, n_middle + 1):
-                idx = int(j * step_size)
-                if idx not in sampled:
-                    sampled.append(idx)
-            if len(configs) - 1 not in sampled:
-                sampled.append(len(configs) - 1)
-
-        lines.append(r"\noindent")
-        for idx in sampled:
-            cfg = configs[idx]
-            lines.append(render_tape_tikz(cfg))
-            lines.append(r"\par\vspace{1mm}")
-
-        lines.append("")
+        # Space-time diagram (waterfall)
+        if len(configs) > 1:
+            lines.append(r"\noindent")
+            lines.append(render_spacetime_tikz(trace))
+            lines.append(r"\bigskip")
+            lines.append("")
 
     return "\n".join(lines)
 
@@ -479,8 +658,9 @@ def generate_latex(data_list, mapping):
     # Machine detail pages
     parts.append(r"\section{Machine Details}")
     parts.append("")
-    parts.append("Each machine is shown with tape visualizations on small inputs. "
-                 "Highlighted cells indicate the head position.")
+    parts.append("Each machine is shown with space-time diagrams on small inputs. "
+                 "Columns represent tape positions, rows represent time steps (top to bottom). "
+                 "Black dots mark the head position.")
     parts.append("")
 
     # Sort: passing by rank (total steps), then failing

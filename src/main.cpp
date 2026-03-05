@@ -87,6 +87,7 @@ void PrintUsage(const char* prog) {
   std::cerr << "  --csv <file>      Write CSV results (use with --bench)\n";
   std::cerr << "  --trace <file>    Output JSON trace with step-by-step configs\n";
   std::cerr << "  --trace-max-len <n>  Max input length for full traces (default: 10)\n";
+  std::cerr << "  --step-limit <n>  Max steps per test case (default: 86B)\n";
 }
 
 int main(int argc, char* argv[]) {
@@ -102,6 +103,7 @@ int main(int argc, char* argv[]) {
   std::string csv_file;
   std::string trace_file;
   int trace_max_len = 10;
+  int64_t step_limit = 86000000000LL;
   bool verbose = false;
   bool optimize = true;
   int precompute_len = 0;
@@ -135,6 +137,8 @@ int main(int argc, char* argv[]) {
       trace_file = argv[++i];
     } else if (arg == "--trace-max-len" && i + 1 < argc) {
       trace_max_len = std::stoi(argv[++i]);
+    } else if (arg == "--step-limit" && i + 1 < argc) {
+      step_limit = std::stoll(argv[++i]);
     } else if (arg[0] != '-') {
       input_file = arg;
     } else {
@@ -222,7 +226,7 @@ int main(int argc, char* argv[]) {
       std::cerr << "TM: " << num_states << " states, "
                 << num_transitions << " transitions\n\n";
 
-      tmc::Simulator sim(tm, 86000000000LL);
+      tmc::Simulator sim(tm, step_limit);
       using Clock = std::chrono::high_resolution_clock;
 
       std::string student = StudentName(input_file);
