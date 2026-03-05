@@ -1,0 +1,13 @@
+# HW3A De-identification Mapping (DO NOT DISTRIBUTE)
+Machine A = adan-blanco
+Machine B = alec-clark
+Machine C = brayden-stach
+Machine D = brent-monning
+Machine E = cory-short
+Machine F = elliott-glenn
+Machine G = ezra-fader
+Machine H = julian-loutzenhiser
+Machine I = kai-fagundes
+Machine J = minji-kang
+Machine K = sebastian-porto
+Machine L = tristan-skerritt

@@ -60,6 +60,17 @@ std::string StudentName(const std::string& path) {
   return base;
 }
 
+std::string JsonEscape(const std::string& s) {
+  std::string out;
+  for (char c : s) {
+    if (c == '"') out += "\\\"";
+    else if (c == '\\') out += "\\\\";
+    else if (c == '\n') out += "\\n";
+    else out += c;
+  }
+  return out;
+}
+
 void PrintUsage(const char* prog) {
   std::cerr << "TMC - Turing Machine Compiler\n\n";
   std::cerr << "Usage: " << prog << " [options] <source.tmc|source.tm>\n";
@@ -74,6 +85,8 @@ void PrintUsage(const char* prog) {
   std::cerr << "  --bench <file>    Benchmark against test suite file\n";
   std::cerr << "  --timeout <secs>  Wall clock timeout per test case (default: 60)\n";
   std::cerr << "  --csv <file>      Write CSV results (use with --bench)\n";
+  std::cerr << "  --trace <file>    Output JSON trace with step-by-step configs\n";
+  std::cerr << "  --trace-max-len <n>  Max input length for full traces (default: 10)\n";
 }
 
 int main(int argc, char* argv[]) {
@@ -87,6 +100,8 @@ int main(int argc, char* argv[]) {
   std::string test_input;
   std::string bench_file;
   std::string csv_file;
+  std::string trace_file;
+  int trace_max_len = 10;
   bool verbose = false;
   bool optimize = true;
   int precompute_len = 0;
@@ -116,6 +131,10 @@ int main(int argc, char* argv[]) {
       timeout_secs = std::stod(argv[++i]);
     } else if (arg == "--csv" && i + 1 < argc) {
       csv_file = argv[++i];
+    } else if (arg == "--trace" && i + 1 < argc) {
+      trace_file = argv[++i];
+    } else if (arg == "--trace-max-len" && i + 1 < argc) {
+      trace_max_len = std::stoi(argv[++i]);
     } else if (arg[0] != '-') {
       input_file = arg;
     } else {
@@ -327,6 +346,113 @@ int main(int argc, char* argv[]) {
       }
 
       return failed > 0 ? 1 : 0;
+    }
+
+    // Trace mode: JSON output with step-by-step configs for small inputs
+    if (!trace_file.empty()) {
+      auto inputs = ParseTestSuite(trace_file);
+      if (inputs.empty()) {
+        std::cerr << "Error: No test inputs loaded from " << trace_file << "\n";
+        return 1;
+      }
+
+      int num_transitions = 0;
+      for (const auto& [state, trans_map] : tm.delta) {
+        num_transitions += static_cast<int>(trans_map.size());
+      }
+      int num_states = static_cast<int>(tm.states.size());
+      std::string student = StudentName(input_file);
+
+      const int64_t trace_step_limit = 10000000LL;  // 10M per case
+      tmc::Simulator sim(tm, trace_step_limit);
+
+      std::cout << "{\n";
+      std::cout << "  \"student\": \"" << JsonEscape(student) << "\",\n";
+      std::cout << "  \"states\": " << num_states << ",\n";
+      std::cout << "  \"transitions\": " << num_transitions << ",\n";
+
+      // Collect traces for small inputs
+      std::cout << "  \"traces\": [\n";
+      bool first_trace = true;
+      for (size_t i = 0; i < inputs.size(); ++i) {
+        const std::string& input = inputs[i];
+        if (static_cast<int>(input.size()) > trace_max_len) continue;
+
+        bool expected = IsTriangular(input);
+        int n = 0;
+        for (char c : input) {
+          if (c == 'a') ++n;
+          else break;
+        }
+
+        sim.Reset(input);
+
+        // Collect configs (cap at 100k to avoid OOM on pathological machines)
+        std::vector<tmc::Config> configs;
+        configs.push_back(sim.CurrentConfig());
+        while (sim.Step()) {
+          if (configs.size() < 100000) {
+            configs.push_back(sim.CurrentConfig());
+          }
+        }
+        bool accepted = sim.Accepted();
+        int64_t steps = sim.Steps();
+
+        if (!first_trace) std::cout << ",\n";
+        first_trace = false;
+
+        std::cout << "    {\n";
+        std::cout << "      \"input\": \"" << JsonEscape(input) << "\",\n";
+        std::cout << "      \"n\": " << n << ",\n";
+        std::cout << "      \"expected\": " << (expected ? "true" : "false") << ",\n";
+        std::cout << "      \"accepted\": " << (accepted ? "true" : "false") << ",\n";
+        std::cout << "      \"total_steps\": " << steps << ",\n";
+        std::cout << "      \"configs\": [\n";
+        for (size_t ci = 0; ci < configs.size(); ++ci) {
+          const auto& cfg = configs[ci];
+          std::string tape_str;
+          for (auto sym : cfg.tape) {
+            tape_str += sym;
+          }
+          std::cout << "        {\"step\": " << ci
+                    << ", \"state\": \"" << JsonEscape(cfg.state)
+                    << "\", \"head\": " << cfg.head
+                    << ", \"tape\": \"" << JsonEscape(tape_str) << "\"}";
+          if (ci + 1 < configs.size()) std::cout << ",";
+          std::cout << "\n";
+        }
+        std::cout << "      ]\n";
+        std::cout << "    }";
+      }
+      std::cout << "\n  ],\n";
+
+      // Per-case results for all inputs
+      std::cout << "  \"results\": [\n";
+      for (size_t i = 0; i < inputs.size(); ++i) {
+        const std::string& input = inputs[i];
+        bool expected = IsTriangular(input);
+        int n = 0;
+        for (char c : input) {
+          if (c == 'a') ++n;
+          else break;
+        }
+
+        auto result = sim.Run(input);
+
+        std::cout << "    {\"input_length\": " << input.size()
+                  << ", \"n\": " << n
+                  << ", \"expected\": " << (expected ? "true" : "false")
+                  << ", \"accepted\": " << (result.accepted ? "true" : "false")
+                  << ", \"steps\": " << result.steps
+                  << ", \"hit_limit\": " << (result.hit_limit ? "true" : "false")
+                  << "}";
+        if (i + 1 < inputs.size()) std::cout << ",";
+        std::cout << "\n";
+      }
+      std::cout << "  ]\n";
+      std::cout << "}\n";
+
+      return 0;
     }
 
     // Output YAML
