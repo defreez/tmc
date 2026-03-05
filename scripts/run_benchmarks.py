@@ -65,8 +65,10 @@ def parse_summary(stdout, step_limit):
       completed       - tests that halted within the step limit
       timed_out       - tests that hit the step limit or were aborted
       completed_steps - total steps for completed tests only
+      details         - list of per-test dicts with n, input_len, expected,
+                        correct, steps, timed_out
     """
-    result = {"completed": 0, "timed_out": 0, "completed_steps": 0}
+    result = {"completed": 0, "timed_out": 0, "completed_steps": 0, "details": []}
     in_summary = False
     for line in stdout.strip().split("\n"):
         if "=== Summary ===" in line:
@@ -85,18 +87,38 @@ def parse_summary(stdout, step_limit):
                 result["max_steps"] = int(line.split()[1])
             continue
 
-        # Parse per-test lines: "[  1/82] n= 1 ... steps=     12 ..."
+        # Parse per-test lines: "[  1/82] n= 1 |w|=   2 ACC  steps=      12 ..."
         if line.strip().startswith("[") and "steps=" in line:
             hit_limit = "HIT_LIMIT" in line or "TIMEOUT" in line
             # Extract steps value
             idx = line.index("steps=")
             after = line[idx + 6:].split()[0]
             steps = int(after)
-            if hit_limit or steps >= step_limit:
+
+            # Extract n and |w|
+            n_idx = line.index("n=")
+            n_val = int(line[n_idx + 2:].split()[0])
+            w_idx = line.index("|w|=")
+            w_val = int(line[w_idx + 4:].split()[0])
+
+            expected = "ACC" in line.split("steps=")[0]
+            correct = "FAIL" not in line.split("steps=")[0]
+
+            is_timed_out = hit_limit or steps >= step_limit
+            if is_timed_out:
                 result["timed_out"] += 1
             else:
                 result["completed"] += 1
                 result["completed_steps"] += steps
+
+            result["details"].append({
+                "n": n_val,
+                "input_len": w_val,
+                "expected": expected,
+                "correct": correct,
+                "steps": steps,
+                "timed_out": is_timed_out,
+            })
 
     if "failed" not in result:
         result["failed"] = 0
@@ -147,6 +169,7 @@ def run_suite(fixture, output_csv, submissions, step_limit, timeout):
             "completed": row.get("completed", 0),
             "timed_out": row.get("timed_out", 0),
             "completed_steps": row.get("completed_steps", 0),
+            "details": row.get("details", []),
             "elapsed": elapsed,
             "killed": killed,
         }
@@ -170,7 +193,7 @@ def run_suite(fixture, output_csv, submissions, step_limit, timeout):
     for t in threads:
         t.join()
 
-    # Write CSV sorted by student name
+    # Write summary CSV sorted by student name
     with open(output_csv, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["student", "states", "transitions", "passed", "failed",
@@ -181,6 +204,19 @@ def run_suite(fixture, output_csv, submissions, step_limit, timeout):
             writer.writerow([r["student"], r["states"], r["transitions"],
                              r["passed"], r["failed"], r["total_steps"], r["max_steps"],
                              r["completed"], r["timed_out"], r["completed_steps"]])
+
+    # Write per-test detail CSV
+    detail_csv = output_csv.replace(".csv", "_detail.csv")
+    with open(detail_csv, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["student", "n", "input_len", "expected", "correct",
+                         "steps", "timed_out"])
+        for name in sorted(results):
+            for d in results[name]["details"]:
+                writer.writerow([name, d["n"], d["input_len"],
+                                 d["expected"], d["correct"],
+                                 d["steps"], d["timed_out"]])
+    print(f"  Wrote {detail_csv}")
 
     print(f"\n  Wrote {output_csv}")
     return results

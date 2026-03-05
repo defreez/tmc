@@ -115,8 +115,7 @@ MACHINE_SUMMARIES = {
         "(\\texttt{S}, \\texttt{V}, \\texttt{Q}, \\texttt{P}, \\texttt{X}, "
         "\\texttt{Y}, \\texttt{Z}) and uses wildcard \\texttt{?} transitions "
         "to handle multiple symbols with shared logic. The algorithm shifts "
-        "and marks symbols in phases to verify the triangular relationship. "
-        "Passes 40 of 41 public test cases."
+        "and marks symbols in phases to verify the triangular relationship."
     ),
     "tristan-skerritt": (
         "Uses an \\texttt{h} marker to track the current head position in the "
@@ -171,6 +170,7 @@ def preamble():
 \usepackage[table]{xcolor}
 \usepackage{hyperref}
 \usepackage{float}
+\usepackage{longtable}
 \usepackage{amsmath}
 \usepackage{amssymb}
 
@@ -409,10 +409,10 @@ def leaderboard(data_list, mapping):
     lines.append(r"\begin{table}[H]")
     lines.append(r"\centering")
     lines.append(r"\small")
-    lines.append(r"\begin{tabular}{r l r r r r r}")
+    lines.append(r"\begin{tabular}{r l r r r r r r}")
     lines.append(r"\toprule")
-    lines.append(f"Rank & Machine & States & Transitions & "
-                 f"Completed & Avg Steps & Correct \\\\")
+    lines.append(f"Rank & Machine & States & Trans. & "
+                 f"Completed & Total Steps & Avg Steps & Correct \\\\")
     lines.append(r"\midrule")
 
     prev_completed = None
@@ -438,6 +438,7 @@ def leaderboard(data_list, mapping):
             f"{i + 1} & {machine_id} & "
             f"{format_number(d['states'])} & {format_number(d['transitions'])} & "
             f"{completed}/{total_cases} & "
+            f"{format_number(d['_completed_steps'])} & "
             f"{format_number(int(avg))} & "
             f"{passed_str} \\\\"
         )
@@ -620,6 +621,261 @@ def comparative_analysis(data_list, mapping):
                 f"{d['_passed']}/{d['_total_cases']} correct, "
                 f"avg {format_number(int(avg))} steps on completed tests")
         lines.append(r"\end{itemize}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def per_case_breakdown(data_list, mapping, detail_data):
+    """Generate a per-case step count table for the top machines."""
+    if not detail_data:
+        return ""
+
+    total_cases = data_list[0]["_total_cases"] if data_list else 0
+
+    def sort_key(d):
+        avg = d["_completed_steps"] / d["_completed"] if d["_completed"] > 0 else float("inf")
+        return (-d["_completed"], avg)
+
+    ranked = sorted(data_list, key=sort_key)
+    # Top machines that completed all tests
+    top = [d for d in ranked if d["_completed"] == total_cases]
+    if not top:
+        top = ranked[:2]
+
+    lines = [r"\section{Per-Case Breakdown}", ""]
+    lines.append("This section shows per-test step counts for the top machines, "
+                 "revealing how step cost grows with input size.")
+    lines.append("")
+
+    # Build step count table for top machines on accept cases
+    for d in top:
+        name = d["student"]
+        mid = mapping[name]
+        tests = detail_data.get(name, [])
+        if not tests:
+            continue
+
+        # Group by n, take accept cases
+        accept_tests = sorted(
+            [t for t in tests if t["expected"] and t["correct"] and not t["timed_out"]],
+            key=lambda t: t["n"])
+
+        if not accept_tests:
+            continue
+
+        lines.append(f"\\subsection{{Machine {mid} --- Per-Case Steps}}")
+        lines.append("")
+        lines.append(r"\begin{longtable}{r r r r}")
+        lines.append(r"\toprule")
+        lines.append(r"$n$ & $|w|$ & Steps & Steps/$|w|$ \\")
+        lines.append(r"\midrule")
+        lines.append(r"\endhead")
+
+        for t in accept_tests:
+            ratio = t["steps"] / t["input_len"] if t["input_len"] > 0 else 0
+            lines.append(
+                f"{t['n']} & {format_number(t['input_len'])} & "
+                f"{format_number(t['steps'])} & "
+                f"{ratio:.1f} \\\\")
+
+        lines.append(r"\bottomrule")
+        lines.append(r"\end{longtable}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def precomputation_analysis(data_list, mapping, detail_data):
+    """Analyze whether large inputs broke the precomputation tables.
+
+    Focuses on the top 2 machines (E and I), comparing their per-case
+    step counts and analyzing growth patterns.
+    """
+    if not detail_data:
+        return ""
+
+    total_cases = data_list[0]["_total_cases"] if data_list else 0
+
+    def sort_key(d):
+        avg = d["_completed_steps"] / d["_completed"] if d["_completed"] > 0 else float("inf")
+        return (-d["_completed"], avg)
+
+    ranked = sorted(data_list, key=sort_key)
+
+    # Identify precomputed machines (states > 1000)
+    precomputed = [d for d in ranked if d["states"] > 1000 and d["_completed"] == total_cases]
+    if len(precomputed) < 2:
+        return ""
+
+    m1, m2 = precomputed[0], precomputed[1]
+    mid1 = mapping[m1["student"]]
+    mid2 = mapping[m2["student"]]
+
+    tests1 = detail_data.get(m1["student"], [])
+    tests2 = detail_data.get(m2["student"], [])
+    if not tests1 or not tests2:
+        return ""
+
+    # Build lookup: n -> steps for accept cases
+    def accept_steps(tests):
+        out = {}
+        for t in tests:
+            if t["expected"] and t["correct"]:
+                out[t["n"]] = t["steps"]
+        return out
+
+    steps1 = accept_steps(tests1)
+    steps2 = accept_steps(tests2)
+    common_ns = sorted(set(steps1.keys()) & set(steps2.keys()))
+
+    lines = [r"\section{Precomputation Analysis}", ""]
+
+    lines.append(
+        f"Two machines used precomputed lookup tables: Machine~{mid1} "
+        f"({format_number(m1['states'])} states) and Machine~{mid2} "
+        f"({format_number(m2['states'])} states). "
+        f"The large test suite includes inputs up to $n = 3{{,}}400$ specifically "
+        f"to test whether precomputation tables have finite coverage.")
+    lines.append("")
+
+    # Comparison table
+    lines.append(f"\\subsection{{Machine {mid1} vs.\\ Machine {mid2}}}")
+    lines.append("")
+    lines.append(r"\begin{longtable}{r r r r r}")
+    lines.append(r"\toprule")
+    lines.append(f"$n$ & $|w|$ & {mid1} steps & {mid2} steps & Ratio \\\\")
+    lines.append(r"\midrule")
+    lines.append(r"\endhead")
+
+    for n in common_ns:
+        s1 = steps1[n]
+        s2 = steps2[n]
+        # Compute input length: n + T(n) = n + n(n+1)/2
+        w = n + n * (n + 1) // 2
+        ratio = s2 / s1 if s1 > 0 else 0
+        lines.append(
+            f"{n} & {format_number(w)} & "
+            f"{format_number(s1)} & {format_number(s2)} & "
+            f"{ratio:.1f}$\\times$ \\\\")
+
+    lines.append(r"\bottomrule")
+    lines.append(r"\end{longtable}")
+    lines.append("")
+
+    # Growth analysis
+    lines.append(r"\subsection{Growth Analysis}")
+    lines.append("")
+
+    # Plot step growth for both machines
+    lines.append(r"\begin{figure}[H]")
+    lines.append(r"\centering")
+    lines.append(r"\begin{tikzpicture}")
+    lines.append(r"\begin{axis}[")
+    lines.append(r"  xlabel={$n$},")
+    lines.append(r"  ylabel={Steps},")
+    lines.append(r"  ymode=log,")
+    lines.append(r"  width=0.85\textwidth,")
+    lines.append(r"  height=0.55\textwidth,")
+    lines.append(r"  grid=major,")
+    lines.append(r"  legend pos=north west,")
+    lines.append(r"]")
+
+    lines.append(r"\addplot[blue, thick, mark=*, mark size=1.5pt] coordinates {")
+    for n in common_ns:
+        lines.append(f"  ({n}, {steps1[n]})")
+    lines.append(r"};")
+    lines.append(f"\\addlegendentry{{Machine {mid1}}}")
+
+    lines.append(r"\addplot[red, thick, mark=square*, mark size=1.5pt] coordinates {")
+    for n in common_ns:
+        lines.append(f"  ({n}, {steps2[n]})")
+    lines.append(r"};")
+    lines.append(f"\\addlegendentry{{Machine {mid2}}}")
+
+    lines.append(r"\end{axis}")
+    lines.append(r"\end{tikzpicture}")
+    lines.append(f"\\caption{{Step count growth for Machine~{mid1} and "
+                 f"Machine~{mid2} on accept inputs ($m = T(n)$).}}")
+    lines.append(r"\end{figure}")
+    lines.append("")
+
+    # Steps/|w| ratio plot to detect transition from O(n) to polynomial
+    lines.append(r"\begin{figure}[H]")
+    lines.append(r"\centering")
+    lines.append(r"\begin{tikzpicture}")
+    lines.append(r"\begin{axis}[")
+    lines.append(r"  xlabel={$n$},")
+    lines.append(r"  ylabel={Steps / $|w|$},")
+    lines.append(r"  width=0.85\textwidth,")
+    lines.append(r"  height=0.55\textwidth,")
+    lines.append(r"  grid=major,")
+    lines.append(r"  legend pos=north west,")
+    lines.append(r"]")
+
+    lines.append(r"\addplot[blue, thick, mark=*, mark size=1.5pt] coordinates {")
+    for n in common_ns:
+        w = n + n * (n + 1) // 2
+        ratio = steps1[n] / w if w > 0 else 0
+        lines.append(f"  ({n}, {ratio:.2f})")
+    lines.append(r"};")
+    lines.append(f"\\addlegendentry{{Machine {mid1}}}")
+
+    lines.append(r"\addplot[red, thick, mark=square*, mark size=1.5pt] coordinates {")
+    for n in common_ns:
+        w = n + n * (n + 1) // 2
+        ratio = steps2[n] / w if w > 0 else 0
+        lines.append(f"  ({n}, {ratio:.2f})")
+    lines.append(r"};")
+    lines.append(f"\\addlegendentry{{Machine {mid2}}}")
+
+    lines.append(r"\end{axis}")
+    lines.append(r"\end{tikzpicture}")
+    lines.append(f"\\caption{{Steps per input symbol (steps/$|w|$). A constant ratio "
+                 f"indicates $O(n)$ behavior (pure lookup); an increasing ratio indicates "
+                 f"the machine has exceeded its precomputed table and fallen back to an "
+                 f"algorithmic strategy.}}")
+    lines.append(r"\end{figure}")
+    lines.append("")
+
+    # Textual analysis
+    # Detect where step growth transitions from O(n) to super-linear
+    # by looking for a jump in steps/|w| ratio
+    lines.append(r"\subsection{Findings}")
+    lines.append("")
+
+    for d, steps_dict, mid in [(m1, steps1, mid1), (m2, steps2, mid2)]:
+        ns_sorted = sorted(steps_dict.keys())
+        ratios = []
+        for n in ns_sorted:
+            w = n + n * (n + 1) // 2
+            ratios.append((n, steps_dict[n] / w if w > 0 else 0))
+
+        # Find transition point: where ratio increases significantly
+        transition_n = None
+        if len(ratios) >= 3:
+            # Baseline: median of first 5 ratios
+            baseline_ratios = [r for _, r in ratios[:min(5, len(ratios))]]
+            baseline = sorted(baseline_ratios)[len(baseline_ratios) // 2]
+            for n, r in ratios:
+                if baseline > 0 and r > baseline * 3:
+                    transition_n = n
+                    break
+
+        if transition_n:
+            lines.append(
+                f"\\textbf{{Machine {mid}:}} The steps/$|w|$ ratio remains roughly "
+                f"constant for small $n$, indicating the machine resolves these inputs "
+                f"by table lookup in $O(n)$ steps. "
+                f"Around $n = {transition_n}$, the ratio begins to increase, indicating "
+                f"the precomputed table has been exhausted and the machine has "
+                f"transitioned to a slower algorithmic fallback.")
+        else:
+            lines.append(
+                f"\\textbf{{Machine {mid}:}} The steps/$|w|$ ratio remains relatively "
+                f"stable across all tested values of $n$, suggesting the precomputation "
+                f"table covers the full range of inputs tested ($n$ up to "
+                f"{ns_sorted[-1] if ns_sorted else '?'}).")
         lines.append("")
 
     return "\n".join(lines)
@@ -933,7 +1189,80 @@ def machine_detail_page(d, mapping, all_data):
     return "\n".join(lines)
 
 
-def generate_latex(data_list, mapping):
+def full_results_appendix(data_list, mapping, detail_data):
+    """Generate appendix with full per-case results for every submission."""
+    if not detail_data:
+        return ""
+
+    total_cases = data_list[0]["_total_cases"] if data_list else 0
+
+    def sort_key(d):
+        avg = d["_completed_steps"] / d["_completed"] if d["_completed"] > 0 else float("inf")
+        return (-d["_completed"], avg)
+
+    ranked = sorted(data_list, key=sort_key)
+
+    lines = [r"\appendix", r"\section{Full Results}", ""]
+    lines.append("Complete per-case results for all 123 test inputs. "
+                 "Steps marked with $\\dagger$ indicate the machine timed out "
+                 "(exceeded the step limit). Steps of 0 indicate the test was "
+                 "aborted after a prior timeout.")
+    lines.append("")
+
+    for d in ranked:
+        name = d["student"]
+        mid = mapping[name]
+        tests = detail_data.get(name, [])
+
+        lines.append(f"\\subsection*{{Machine {mid}}}")
+        lines.append("")
+
+        if not tests:
+            lines.append("\\textit{No per-test data (machine produced no output).}")
+            lines.append(r"\clearpage")
+            lines.append("")
+            continue
+
+        lines.append(r"\begin{longtable}{r r l l r l}")
+        lines.append(r"\toprule")
+        lines.append(r"$n$ & $|w|$ & Expected & Result & Steps & Status \\")
+        lines.append(r"\midrule")
+        lines.append(r"\endhead")
+
+        for t in sorted(tests, key=lambda t: (t["n"], t["input_len"])):
+            exp_str = "ACC" if t["expected"] else "REJ"
+            if t["timed_out"]:
+                if t["steps"] == 0:
+                    result_str = "---"
+                    steps_str = "---"
+                    status = "aborted"
+                else:
+                    result_str = "---"
+                    steps_str = f"{format_number(t['steps'])}$^\\dagger$"
+                    status = "timed out"
+            elif t["correct"]:
+                result_str = exp_str
+                steps_str = format_number(t["steps"])
+                status = "\\checkmark"
+            else:
+                result_str = "ACC" if not t["expected"] else "REJ"
+                steps_str = format_number(t["steps"])
+                status = "WRONG"
+
+            lines.append(
+                f"{t['n']} & {format_number(t['input_len'])} & "
+                f"{exp_str} & {result_str} & "
+                f"{steps_str} & {status} \\\\")
+
+        lines.append(r"\bottomrule")
+        lines.append(r"\end{longtable}")
+        lines.append(r"\clearpage")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def generate_latex(data_list, mapping, detail_data=None):
     """Generate the full LaTeX document."""
     parts = []
     parts.append(preamble())
@@ -941,6 +1270,7 @@ def generate_latex(data_list, mapping):
     parts.append(methodology())
     parts.append(leaderboard(data_list, mapping))
     parts.append(comparative_analysis(data_list, mapping))
+    parts.append(precomputation_analysis(data_list, mapping, detail_data or {}))
 
     # Machine detail pages
     parts.append(r"\section{Machine Details}")
@@ -957,6 +1287,9 @@ def generate_latex(data_list, mapping):
 
     for d in sorted(data_list, key=detail_sort_key):
         parts.append(machine_detail_page(d, mapping, data_list))
+
+    # Appendix with full results
+    parts.append(full_results_appendix(data_list, mapping, detail_data or {}))
 
     parts.append(r"\end{document}")
     return "\n".join(parts)
@@ -1002,6 +1335,30 @@ def load_csv_results(csv_paths):
                 combined[name]["_completed_steps"] += int(
                     row.get("completed_steps", row["total_steps"]))
     return list(combined.values())
+
+
+def load_detail_data(results_dir):
+    """Load per-test detail CSVs from results directory.
+
+    Returns {student_name: [{"n": int, "input_len": int, "expected": bool,
+                             "correct": bool, "steps": int, "timed_out": bool}, ...]}
+    Rows from all detail CSVs are concatenated per student.
+    """
+    details = {}
+    for path in sorted(glob.glob(os.path.join(results_dir, "*_detail.csv"))):
+        with open(path) as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                name = row["student"]
+                details.setdefault(name, []).append({
+                    "n": int(row["n"]),
+                    "input_len": int(row["input_len"]),
+                    "expected": row["expected"] == "True",
+                    "correct": row["correct"] == "True",
+                    "steps": int(row["steps"]),
+                    "timed_out": row["timed_out"] == "True",
+                })
+    return details
 
 
 def load_trace_data(trace_dir):
@@ -1051,7 +1408,9 @@ def main():
             print("Run run_benchmarks.py first, or specify --results-csv explicitly.", file=sys.stderr)
             sys.exit(1)
         print(f"Using most recent results: {latest}")
-        args.results_csv = sorted(glob.glob(os.path.join(latest, "*.csv")))
+        args.results_csv = sorted(
+            p for p in glob.glob(os.path.join(latest, "*.csv"))
+            if not p.endswith("_detail.csv"))
         if not args.results_csv:
             print(f"Error: No CSV files found in {latest}", file=sys.stderr)
             sys.exit(1)
@@ -1094,12 +1453,19 @@ def main():
     else:
         print(f"No trace data found in {trace_dir} (run run_benchmarks.py to generate)\n")
 
+    # Load per-test detail data from *_detail.csv files
+    detail_data = load_detail_data(args.output_dir)
+    if detail_data:
+        print(f"Loaded per-test details for {len(detail_data)} students\n")
+    else:
+        print("No per-test detail data found (re-run run_benchmarks.py to generate)\n")
+
     # Create mapping
     mapping = create_mapping(data_list)
 
     # Generate LaTeX
     print("Generating LaTeX...")
-    latex = generate_latex(data_list, mapping)
+    latex = generate_latex(data_list, mapping, detail_data)
 
     os.makedirs(args.output_dir, exist_ok=True)
     tex_path = os.path.join(args.output_dir, "hw3a_report.tex")

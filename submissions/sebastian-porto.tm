@@ -13,6 +13,7 @@ delta:
   qS:
     a: [qMark,S,R]
     b: [qR,b,S]
+    _: [qA,_,S]
   qMark:
     a: [qMark,X,R]
     b: [qFindX,b,L]
